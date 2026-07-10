@@ -200,7 +200,7 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
             </div>
           )}
           {messages.map((message) => (
-            <MessageCard key={message.id} message={message} runs={message.role === "assistant" ? runsForMessage(message, runs) : []} docs={docs} />
+            <MessageCard key={message.id} message={message} runs={message.role === "assistant" ? runsForMessage(message, runs) : []} />
           ))}
           {sending && <ThinkingCard />}
           <div ref={messagesEndRef} />
@@ -226,7 +226,7 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
   );
 }
 
-function MessageCard({ message, runs, docs }: { message: ChatMessage; runs: CommandRun[]; docs: RagDocument[] }) {
+function MessageCard({ message, runs }: { message: ChatMessage; runs: CommandRun[] }) {
   if (message.role === "user") {
     return (
       <article className="message user">
@@ -237,7 +237,7 @@ function MessageCard({ message, runs, docs }: { message: ChatMessage; runs: Comm
   }
 
   const intent = String(message.metadata_json?.intent ?? "text");
-  const sources = sourceFiles(message, docs);
+  const sources = sourceFiles(message);
   const sections = splitAnswer(message.content);
 
   return (
@@ -396,7 +396,7 @@ function intentLabel(intent: string) {
   return "回答";
 }
 
-function sourceFiles(message: ChatMessage, docs: RagDocument[]) {
+function sourceFiles(message: ChatMessage) {
   const metadataSources = Array.isArray(message.metadata_json?.experience_sources)
     ? message.metadata_json.experience_sources
     : Array.isArray(message.metadata_json?.rag_sources)
@@ -410,7 +410,6 @@ function sourceFiles(message: ChatMessage, docs: RagDocument[]) {
     .map((item) => (typeof item === "object" && item && "source" in item ? String((item as { source?: unknown }).source) : ""))
     .filter(Boolean);
   if (sourceNames.length) return Array.from(new Set(sourceNames));
-  if (["knowledge", "project_knowledge"].includes(String(message.metadata_json?.intent))) return docs.slice(0, 3).map((doc) => doc.file_name);
   return [];
 }
 
