@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ops-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ops_agent_chat
+      POSTGRES_USER: opsagent
+      POSTGRES_PASSWORD: opsagent_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - ops_agent_postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opsagent -d ops_agent_chat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ops_agent_postgres_data:
+
