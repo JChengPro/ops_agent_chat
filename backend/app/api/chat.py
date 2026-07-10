@@ -76,6 +76,7 @@ def send_message(
         assistant_message=ChatMessageOut.model_validate(response.assistant_message),
         command_runs=[_run_to_dict(run) for run in response.command_runs],
         command_plan=response.command_plan,
+        experience_sources=response.rag_sources,
         rag_sources=response.rag_sources,
         approval_request=None,
     )
@@ -108,6 +109,8 @@ def _run_to_dict(run) -> dict:
         "stdout_excerpt": run.stdout_excerpt,
         "stderr_excerpt": run.stderr_excerpt,
         "duration_ms": run.duration_ms,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "ruleguard_result": run.ruleguard_result,
     }
-

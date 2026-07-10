@@ -39,6 +39,7 @@ export function sendMessage(sessionId: number, content: string) {
     assistant_message: ChatMessage;
     command_runs: CommandRun[];
     command_plan?: Record<string, unknown>;
+    experience_sources: unknown[];
     rag_sources: unknown[];
   }>(`/api/chat-sessions/${sessionId}/messages`, {
     method: "POST",

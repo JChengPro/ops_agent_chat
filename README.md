@@ -1,33 +1,35 @@
 # Ops Agent Chat
 
-Ops Agent Chat 是一个面向 Docker Compose 项目的聊天式运维诊断助手。V1 版本聚焦“只读诊断”：用户用自然语言提问，系统结合项目知识库、命令规划和受限 SSH 执行，返回服务状态、日志线索、健康检查结果和下一步建议。
+Ops Agent Chat 是一个聊天式运维 Agent 工作台。当前 V1.1 版本聚焦“通用问答 + 项目证据 + 只读诊断”：用户用自然语言提问，系统先判断问题类型，再决定直接用 LLM 回答、引用项目配置和经验库，或通过受限 SSH 执行只读诊断命令。
 
 ## 项目定位
 
-这个项目不是通用聊天机器人，而是给运维场景使用的 Agent 工作台。它的目标是把常见的排障动作收敛到一个受控流程中：
+这个项目不是单纯的 RAG 文档问答系统，也不是 Docker 专用工具。它的目标是把运维排障拆成可控的证据链：
 
-- 读取项目知识库，理解部署结构、服务名称和排障方式。
-- 根据用户问题规划只读命令，例如查看容器状态、日志和健康接口。
-- 通过 SSH 在目标工作目录执行允许范围内的诊断命令。
-- 把命令结果整理成清晰的诊断结论、证据和建议。
-- 在前端保留项目、会话、命令历史、知识库和配置视图。
+- 普通聊天和通用技术问题由 LLM 直接回答，不强制走项目检索。
+- 涉及当前项目配置、目录、服务和部署信息的问题，必须基于项目证据回答。
+- 涉及当前运行状态的问题，通过 SSH 执行只读命令获取证据。
+- 经验库用于补充项目 README、部署说明、历史故障、FAQ 和处理记录，不作为唯一主路径。
+- 前端保留项目、会话、命令历史、经验库和配置视图。
 
-## V1 能力
+## 当前能力
 
 - 用户登录和会话管理。
 - 项目列表、聊天记录和命令历史。
-- PostgreSQL + pgvector 存储业务数据和知识库索引。
-- 基于项目文档的 RAG 检索。
-- 只读命令策略校验，默认拒绝重启、停止、删除、写入等高风险操作。
-- 通过 SSH 诊断本机或远程 Docker Compose 项目。
-- Docker Compose 一键启动前端、后端和数据库。
+- Intent Router 区分 `general_chat`、`general_tech`、`project_knowledge`、`diagnosis`、`mixed`、`operation`。
+- 通用问题不依赖项目资料，可以直接回答。
+- 项目问题优先使用项目配置和经验库；证据不足时明确说明不确定，不编造端口、密码、服务名或路径。
+- 诊断问题通过只读命令检查容器、日志、健康接口和依赖状态。
+- RuleGuard 默认拒绝重启、停止、删除、写入、权限变更等高风险操作。
+- Docker Compose 一键启动前端、后端和 PostgreSQL + pgvector。
 
-## V1 边界
+## 当前边界
 
-- V1 不执行修改类运维操作，例如重启服务、删除容器、修改配置或写入文件。
-- V1 不做流式输出，聊天回复在后端完成后一次性返回。
-- V1 的模型适配器当前以 DeepSeek 配置为示例，不代表业务上只能使用 DeepSeek；后续可以扩展其它兼容的 LLM Provider。
-- V1 的知识库需要先准备项目文档，文档质量会直接影响诊断质量。
+- V1.1 不执行修改类运维操作，例如重启服务、删除容器、修改配置或写入文件。
+- V1.1 不做流式输出，聊天回复在后端完成后一次性返回。
+- V1.1 的模型适配器当前以 DeepSeek 配置为示例，不代表只能使用 DeepSeek，后续可以扩展其它兼容 LLM Provider。
+- V1.1 仍复用 `rag_documents` / `rag_chunks` 作为经验库兼容实现，但 RAG 不再是所有问题的主流程。
+- Project Facts、知识图谱、反馈接口和独立 Runbook 表属于后续版本规划。
 
 ## 技术栈
 
@@ -106,7 +108,7 @@ npm run dev
 .
 ├── backend/                 # FastAPI 后端
 ├── frontend/                # React 前端
-├── docs/                    # 架构、配置、部署和知识库文档
+├── docs/                    # 架构、配置、部署和经验库种子文档
 ├── infra/                   # 基础设施相关配置
 ├── secrets/                 # 本地密钥目录，只保留占位文件
 ├── docker-compose.yml       # 一键启动配置
@@ -141,4 +143,4 @@ npm run dev
 - [LLM 配置示例](docs/config/DEEPSEEK_CONFIG.md)
 - [PostgreSQL + pgvector 配置](docs/database/POSTGRES_PGVECTOR_SETUP.md)
 - [Docker 一键运行设计](docs/deployment/DOCKER_ONE_CLICK_DESIGN.md)
-- [VideoHub 知识库](docs/knowledge/videohub/README.md)
+- [VideoHub 经验库种子文档](docs/knowledge/videohub/README.md)

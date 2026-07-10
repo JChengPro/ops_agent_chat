@@ -37,6 +37,6 @@ class ChatSendResponse(BaseModel):
     assistant_message: ChatMessageOut
     command_runs: list[dict[str, Any]] = []
     command_plan: dict[str, Any] | None = None
+    experience_sources: list[dict[str, Any]] = []
     rag_sources: list[dict[str, Any]] = []
     approval_request: dict[str, Any] | None = None
-

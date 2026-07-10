@@ -284,7 +284,7 @@ function AnswerSections({ sections }: { sections: { title: string; body: string[
 function sectionIcon(title: string) {
   if (title === "诊断结论") return <CircleCheck size={17} strokeWidth={2.15} />;
   if (["证据", "项目依据"].includes(title)) return <FileSearch size={17} strokeWidth={2.15} />;
-  if (["下一步建议", "补充建议", "适用场景"].includes(title)) return <Lightbulb size={17} strokeWidth={2.15} />;
+  if (["下一步建议", "补充建议", "适用场景", "可替代建议"].includes(title)) return <Lightbulb size={17} strokeWidth={2.15} />;
   if (title === "执行命令") return <TerminalSquare size={17} strokeWidth={2.15} />;
   if (title === "风险提示") return <ShieldAlert size={17} strokeWidth={2.15} />;
   if (["概念", "回答"].includes(title)) return <BookOpenText size={17} strokeWidth={2.15} />;
@@ -358,6 +358,8 @@ function canonicalSectionTitle(line: string) {
     "引用来源": "引用来源",
     "来源": "引用来源",
     "风险提示": "风险提示",
+    "可替代建议": "可替代建议",
+    "替代建议": "可替代建议",
   };
   return titleMap[normalized] ?? null;
 }
@@ -380,13 +382,13 @@ function normalizeSectionTitle(line: string) {
 function inferTitle(content: string) {
   if (content.includes("V1 只支持")) return "风险提示";
   if (content.includes("命令") || content.includes("exit_code")) return "诊断结论";
-  if (content.includes("项目事实") || content.includes("项目证据") || content.includes("来源")) return "项目证据";
+  if (content.includes("项目依据") || content.includes("项目证据") || content.includes("来源")) return "项目依据";
   return "回答";
 }
 
 function intentLabel(intent: string) {
   if (intent === "diagnosis") return "诊断结果";
-  if (intent === "project_knowledge" || intent === "knowledge") return "项目事实";
+  if (intent === "project_knowledge" || intent === "knowledge") return "项目回答";
   if (intent === "general_chat") return "通用聊天";
   if (intent === "general_tech") return "通用技术";
   if (intent === "operation") return "风险提示";
@@ -395,7 +397,11 @@ function intentLabel(intent: string) {
 }
 
 function sourceFiles(message: ChatMessage, docs: RagDocument[]) {
-  const metadataSources = Array.isArray(message.metadata_json?.rag_sources) ? message.metadata_json.rag_sources : [];
+  const metadataSources = Array.isArray(message.metadata_json?.experience_sources)
+    ? message.metadata_json.experience_sources
+    : Array.isArray(message.metadata_json?.rag_sources)
+      ? message.metadata_json.rag_sources
+      : [];
   const names = metadataSources
     .map((item) => (typeof item === "object" && item && "file_name" in item ? String((item as { file_name?: unknown }).file_name) : ""))
     .filter(Boolean);

@@ -86,7 +86,7 @@ class AgentPipeline:
             command_runs = self._execute_l0_plan(db, session, project, server, plan_row, command_plan)
 
         if intent == "operation":
-            answer = "V1 只支持只读诊断，不执行重启、停止、删除或修改类操作。你可以先让我检查服务状态、日志和健康接口。"
+            answer = self._operation_rejection_answer()
         elif intent in {"general_chat", "general_tech"}:
             answer = self._answer_general(user_message.content, intent)
         else:
@@ -472,7 +472,7 @@ class AgentPipeline:
             "Answer in Chinese. First state that no reliable current project evidence was found. "
             "Then provide general DevOps guidance if useful. "
             "Do not invent project-specific ports, passwords, service names, paths, commands, or deployment details. "
-            "Suggest adding project docs or asking for a read-only runtime diagnosis when appropriate. "
+            "Suggest adding README, deployment notes, service notes, incident records, or asking for a read-only runtime diagnosis when appropriate. "
             "Use plain section headings exactly as 回答, 项目依据, 补充建议. "
             "Do not output markdown bold headings, quotes, code fences, or JSON."
         )
@@ -558,6 +558,8 @@ class AgentPipeline:
             "引用来源": "引用来源",
             "来源": "引用来源",
             "风险提示": "风险提示",
+            "可替代建议": "可替代建议",
+            "替代建议": "可替代建议",
         }
         normalized_lines: list[str] = []
         for line in answer.replace("\r", "").split("\n"):
@@ -622,6 +624,14 @@ class AgentPipeline:
             "- 当前问题没有要求读取项目配置或检查实时运行状态。\n\n"
             "适用场景\n"
             "如果你要确认当前项目里的真实状态，请明确让我检查服务状态、日志或健康接口；如果你要确认项目配置，请补充项目经验或查看配置。"
+        )
+
+    def _operation_rejection_answer(self) -> str:
+        return (
+            "风险提示\n"
+            "V1 只支持只读诊断，不执行重启、停止、删除、修改配置、写入文件或变更权限等操作。\n\n"
+            "可替代建议\n"
+            "你可以让我先检查服务状态、容器列表、日志、健康接口或依赖组件状态。确认原因后，再由人工决定是否执行变更操作。"
         )
 
     def _fallback_no_project_evidence_answer(self, question: str) -> str:
