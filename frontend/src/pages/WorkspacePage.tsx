@@ -215,7 +215,7 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
       <aside className="glass-panel right-pane">
         <div className="tabs">
           <button className={rightTab === "commands" ? "active" : ""} onClick={() => setRightTab("commands")}><TerminalSquare size={16} />命令</button>
-          <button className={rightTab === "runbook" ? "active" : ""} onClick={() => setRightTab("runbook")}><BookOpenText size={16} />Runbook</button>
+          <button className={rightTab === "runbook" ? "active" : ""} onClick={() => setRightTab("runbook")}><BookOpenText size={16} />经验库</button>
           <button className={rightTab === "config" ? "active" : ""} onClick={() => setRightTab("config")}><Settings size={16} />配置</button>
         </div>
         {rightTab === "commands" && <CommandHistory runs={runs} />}
@@ -484,12 +484,12 @@ function Runbook({ docs, projectId, onUploaded }: { docs: RagDocument[]; project
   }
   return (
     <div className="side-card">
-      <h3>Runbook</h3>
+      <h3>项目经验</h3>
       <label className="upload-line">
         <input type="file" accept=".md,.txt" onChange={(event) => upload(event.target.files?.[0])} />
-        <span>{uploading ? "上传中..." : "上传经验文档"}</span>
+        <span>{uploading ? "上传中..." : "上传记录"}</span>
       </label>
-      <p className="empty-note">Runbook 用于项目专属 FAQ、历史故障和人工经验，不作为主知识路径。</p>
+      {docs.length === 0 && <p className="empty-note">暂无项目 FAQ、历史故障或处理记录。</p>}
       {docs.map((doc) => <div key={doc.id} className="doc-row"><strong>{doc.file_name}</strong><span>{doc.doc_type} · {doc.chunk_count} chunks</span></div>)}
     </div>
   );
