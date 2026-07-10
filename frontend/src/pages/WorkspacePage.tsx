@@ -283,10 +283,11 @@ function AnswerSections({ sections }: { sections: { title: string; body: string[
 
 function sectionIcon(title: string) {
   if (title === "诊断结论") return <CircleCheck size={17} strokeWidth={2.15} />;
-  if (title === "证据") return <FileSearch size={17} strokeWidth={2.15} />;
-  if (title === "下一步建议") return <Lightbulb size={17} strokeWidth={2.15} />;
+  if (["证据", "项目依据"].includes(title)) return <FileSearch size={17} strokeWidth={2.15} />;
+  if (["下一步建议", "补充建议", "适用场景"].includes(title)) return <Lightbulb size={17} strokeWidth={2.15} />;
   if (title === "执行命令") return <TerminalSquare size={17} strokeWidth={2.15} />;
   if (title === "风险提示") return <ShieldAlert size={17} strokeWidth={2.15} />;
+  if (["概念", "回答"].includes(title)) return <BookOpenText size={17} strokeWidth={2.15} />;
   return <Target size={17} strokeWidth={2.15} />;
 }
 
@@ -336,6 +337,16 @@ function canonicalSectionTitle(line: string) {
     "诊断结果": "诊断结论",
     "证据": "证据",
     "依据": "证据",
+    "项目依据": "项目依据",
+    "项目证据": "项目依据",
+    "回答": "回答",
+    "概念": "概念",
+    "要点": "要点",
+    "例子": "例子",
+    "示例": "例子",
+    "适用场景": "适用场景",
+    "补充建议": "补充建议",
+    "不确定项": "不确定项",
     "执行命令": "执行命令",
     "命令": "执行命令",
     "下一步建议": "下一步建议",

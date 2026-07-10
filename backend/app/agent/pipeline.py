@@ -438,15 +438,15 @@ class AgentPipeline:
             "evidence_policy": self._evidence_policy(intent),
         }
         fallback = self._fallback_answer(question, intent, rag_chunks, command_runs, project)
+        format_instruction = self._answer_format_instruction(intent)
         system = (
             "You are LLM Reasoner for Ops Agent Chat V1.1. Answer in Chinese. "
             "Use project_facts, experience_hits, and runtime_evidence only when they exist. "
             "Project facts come from configured project context. Experience hits come from the project experience library. Runtime status claims require runtime_evidence. "
             "If project_evidence_available is false, explicitly say no current project evidence was found. "
             "Do not invent project-specific ports, passwords, service names, paths, commands, or deployment details. "
-            "Separate conclusion, evidence, and next steps. If needed, add 不确定项. "
-            "Use plain section headings exactly as 诊断结论, 证据, 下一步建议. "
-            "Never output headings such as 结论, 证据, 后续建议, 下一步建议 with quotes, markdown bold, code fences, or JSON. "
+            f"{format_instruction} "
+            "Never output headings with quotes, markdown bold, code fences, or JSON. "
             "Do not claim a command succeeded if status or exit_code says otherwise. Do not suggest executing change commands directly in V1."
         )
         user = json.dumps({"question": question, "context": context}, ensure_ascii=False)
@@ -459,8 +459,7 @@ class AgentPipeline:
         system = (
             f"You are Ops Agent Chat. Answer in Chinese for {scope}. "
             "Do not claim to know this user's current project configuration, ports, passwords, paths, service names, or runtime status. "
-            "Use plain section headings exactly as 诊断结论, 证据, 下一步建议. "
-            "For ordinary conversation, the headings can still be brief and natural. "
+            f"{self._answer_format_instruction(intent)} "
             "Keep the answer concise and practical. Do not output markdown bold headings, quotes, code fences, or JSON."
         )
         answer = self.llm.text_completion(system, question, fallback)
@@ -474,7 +473,7 @@ class AgentPipeline:
             "Then provide general DevOps guidance if useful. "
             "Do not invent project-specific ports, passwords, service names, paths, commands, or deployment details. "
             "Suggest adding project docs or asking for a read-only runtime diagnosis when appropriate. "
-            "Use plain section headings exactly as 诊断结论, 证据, 下一步建议. "
+            "Use plain section headings exactly as 回答, 项目依据, 补充建议. "
             "Do not output markdown bold headings, quotes, code fences, or JSON."
         )
         answer = self.llm.text_completion(system, question, fallback)
@@ -519,6 +518,17 @@ class AgentPipeline:
             sources.append({"type": "runtime_tools", "label": "只读诊断命令", "count": len(runs)})
         return sources
 
+    def _answer_format_instruction(self, intent: str) -> str:
+        if intent == "general_chat":
+            return "Use a natural conversational answer. Do not force diagnostic headings. Use short paragraphs or a compact list only when helpful."
+        if intent == "general_tech":
+            return "Use natural technical explanation headings when useful, such as 概念, 要点, 例子, 适用场景. Do not use diagnostic headings."
+        if intent == "project_knowledge":
+            return "Use plain section headings exactly as 回答, 项目依据, 补充建议. If evidence is missing, add 不确定项."
+        if intent == "operation":
+            return "Use plain section headings exactly as 风险提示, 可替代建议."
+        return "Use plain section headings exactly as 诊断结论, 证据, 下一步建议. If needed, add 不确定项."
+
     def _normalize_answer_text(self, answer: str) -> str:
         title_map = {
             "诊断结论": "诊断结论",
@@ -529,6 +539,16 @@ class AgentPipeline:
             "依据": "证据",
             "执行命令": "执行命令",
             "命令": "执行命令",
+            "回答": "回答",
+            "项目依据": "项目依据",
+            "项目证据": "项目依据",
+            "补充建议": "补充建议",
+            "不确定项": "不确定项",
+            "概念": "概念",
+            "要点": "要点",
+            "例子": "例子",
+            "示例": "例子",
+            "适用场景": "适用场景",
             "下一步建议": "下一步建议",
             "后续建议": "下一步建议",
             "建议": "下一步建议",
@@ -573,11 +593,11 @@ class AgentPipeline:
             return "\n".join(lines)
         if chunks:
             sources = "、".join({chunk.file_name for chunk in chunks})
-            lines = ["诊断结论", f"根据当前项目经验库（{sources}），我检索到相关项目资料。", "", "证据"]
+            lines = ["回答", f"根据当前项目经验库（{sources}），我检索到相关项目资料。", "", "项目依据"]
             for chunk in chunks[:3]:
                 excerpt = " ".join(chunk.content.split())[:360]
                 lines.append(f"- 来源 `{chunk.file_name}`：{excerpt}")
-            lines.extend(["", "下一步建议", "如果你要我检查当前运行状态，请问“为什么项目打不开？”或“帮我看后端日志”，V1 会执行只读诊断命令。"])
+            lines.extend(["", "补充建议", "如果你要我检查当前运行状态，请问“为什么项目打不开？”或“帮我看后端日志”，V1 会执行只读诊断命令。"])
             return "\n".join(lines)
         if intent == "project_knowledge":
             project_facts = self._project_fact_context(project)
@@ -591,32 +611,27 @@ class AgentPipeline:
     def _fallback_general_answer(self, question: str, intent: str) -> str:
         if intent == "general_chat":
             return (
-                "诊断结论\n"
-                "这是一个普通聊天问题，可以直接回答；该回答不引用当前项目上下文。\n\n"
-                "证据\n"
-                f"用户问题：{question}\n"
-                "当前问题没有要求读取项目配置或检查实时运行状态。\n\n"
-                "下一步建议\n"
-                "如果你要讨论当前项目，请明确说明项目配置、运行状态或要检查的服务。"
+                "可以。我会按普通聊天问题处理，不引用当前项目配置，也不会执行诊断命令。\n\n"
+                f"你刚才的问题是：{question}"
             )
         return (
-            "诊断结论\n"
-            "这是一个通用技术问题，可以基于通用运维知识先做解释；该回答不引用当前项目文档，也不代表当前项目的实际配置。\n\n"
-            "证据\n"
-            f"用户问题：{question}\n"
-            "当前问题没有要求读取项目配置或检查实时运行状态。\n\n"
-            "下一步建议\n"
-            "如果你想确认当前项目里的真实状态，请明确让我检查服务状态、日志或健康接口；如果你想确认项目配置，请补充或更新项目文档。"
+            "概念\n"
+            "这是一个通用技术问题，可以基于通用技术知识解释；该回答不代表当前项目的实际配置或运行状态。\n\n"
+            "要点\n"
+            f"- 用户问题：{question}\n"
+            "- 当前问题没有要求读取项目配置或检查实时运行状态。\n\n"
+            "适用场景\n"
+            "如果你要确认当前项目里的真实状态，请明确让我检查服务状态、日志或健康接口；如果你要确认项目配置，请补充项目经验或查看配置。"
         )
 
     def _fallback_no_project_evidence_answer(self, question: str) -> str:
         return (
-            "诊断结论\n"
+            "回答\n"
             "当前项目没有检索到足够可靠的项目证据，因此不能确认这个项目的具体配置或实现细节。\n\n"
-            "证据\n"
+            "项目依据\n"
             f"用户问题：{question}\n"
             "没有可用的项目配置事实、经验库片段或实时工具结果支持直接回答。\n\n"
-            "下一步建议\n"
+            "补充建议\n"
             "可以补充 README、部署说明、服务说明、历史故障或处理记录到经验库。也可以让我执行 V1 允许的只读诊断来获取当前状态证据。"
         )
 
@@ -625,12 +640,12 @@ class AgentPipeline:
         for fact in facts[:12]:
             fact_lines.append(f"- {fact['name']}：`{fact['value']}`（来源：{fact['source']}）")
         return (
-            "诊断结论\n"
+            "回答\n"
             "我找到了当前项目的配置事实。下面只列出已有事实；没有列出的端口、密码、依赖或路径不能凭空确认。\n\n"
-            "证据\n"
+            "项目依据\n"
             f"用户问题：{question}\n"
             + "\n".join(fact_lines)
-            + "\n\n下一步建议\n"
+            + "\n\n补充建议\n"
             "如果这些事实不足以回答你的问题，可以补充 README、部署说明、服务说明或处理记录到经验库；如果要确认当前运行状态，可以让我执行只读诊断。"
         )
 
