@@ -46,7 +46,7 @@ class AgentPipeline:
         command_plan: dict[str, Any] | None = None
         command_runs: list[CommandRun] = []
 
-        if intent in {"knowledge", "mixed"}:
+        if intent in {"project_knowledge", "mixed"}:
             rag_chunks = search_project_chunks(db, project.id, user_message.content, limit=5)
 
         if intent in {"diagnosis", "mixed"}:
@@ -64,6 +64,8 @@ class AgentPipeline:
 
         if intent == "operation":
             answer = "V1 只支持只读诊断，不执行重启、停止、删除或修改类操作。你可以先让我检查服务状态、日志和健康接口。"
+        elif intent == "general":
+            answer = self._answer_general(user_message.content)
         else:
             answer = self._analyze_and_answer(user_message.content, project, intent, rag_chunks, command_runs)
             for run in command_runs:
@@ -111,44 +113,83 @@ class AgentPipeline:
             "查看",
             "状态",
             "日志",
+            "现在",
+            "当前运行",
+            "是否正常",
             "打不开",
             "无法访问",
             "挂了",
             "health",
             "502",
-            "redis",
-            "mysql",
-            "rabbitmq",
             "磁盘",
             "内存",
-            "端口",
             "status",
             "log",
         ]
+        project_terms = [
+            "当前项目",
+            "本项目",
+            "这个项目",
+            "项目里",
+            "项目中",
+            "项目的",
+            "videohub",
+            "health 地址",
+            "health地址",
+            "数据库密码",
+            "服务名",
+        ]
+        general_terms = [
+            "是什么",
+            "什么意思",
+            "区别",
+            "原理",
+            "一般",
+            "常见",
+            "有哪些",
+            "为什么会",
+            "如何理解",
+            "stdout",
+            "stderr",
+        ]
+        mixed_terms = ["结合", "根据文档和日志", "文档和当前", "日志和项目文档", "配置和日志"]
         has_operation_term = any(word in lowered for word in operation_terms)
         has_diagnosis_term = any(word in lowered for word in diagnosis_terms)
+        has_project_term = any(word in lowered for word in project_terms)
+        has_general_term = any(word in lowered for word in general_terms)
+        has_mixed_term = any(word in lowered for word in mixed_terms)
         if has_operation_term:
             return "operation"
+        if has_mixed_term or (has_project_term and has_diagnosis_term):
+            return "mixed"
         if has_diagnosis_term:
             return "diagnosis"
-        fallback = {"intent_type": "knowledge"}
+        if has_project_term and not has_general_term:
+            return "project_knowledge"
+        if has_general_term and not has_project_term:
+            return "general"
+        fallback = {"intent_type": "general"}
         prompt = (
             "Classify the user's Ops Agent Chat request. Return JSON only: "
-            '{"intent_type":"knowledge|diagnosis|operation|mixed"}. '
+            '{"intent_type":"general|project_knowledge|diagnosis|operation|mixed"}. '
+            "general means generic technical knowledge that does not depend on this specific project. "
+            "project_knowledge means facts about this project, such as its deployment, ports, services, config, paths, or docs. "
             "Operation means the user asks to change runtime state, such as restart, stop, delete, deploy, modify, or cleanup. "
             "Read-only status checks, log checks, health checks, and Redis/MySQL status questions are diagnosis, not operation."
         )
         result = self.llm.json_completion(prompt, message, fallback)
         intent = result.get("intent_type", fallback["intent_type"])
         if intent == "operation" and not has_operation_term:
-            corrected = "diagnosis" if has_diagnosis_term else "knowledge"
+            corrected = "diagnosis" if has_diagnosis_term else ("project_knowledge" if has_project_term else "general")
             logger.warning(
                 "IntentRouter override: model returned operation without change verb; using %s. message=%r",
                 corrected,
                 message,
             )
             return corrected
-        return intent if intent in {"knowledge", "diagnosis", "operation", "mixed"} else fallback["intent_type"]
+        if intent == "knowledge":
+            return "project_knowledge"
+        return intent if intent in {"general", "project_knowledge", "diagnosis", "operation", "mixed"} else fallback["intent_type"]
 
     def _generate_command_plan(self, message: str, project: Project) -> dict[str, Any]:
         compose = project.compose_file or "docker-compose.yml"
@@ -288,11 +329,13 @@ class AgentPipeline:
         rag_chunks: list[RetrievedChunk],
         command_runs: list[CommandRun],
     ) -> str:
-        if intent == "knowledge" and not rag_chunks:
-            return "当前项目知识库没有检索到足够相关的文档。你可以补充部署、排障或接口说明文档后再问。"
+        has_project_evidence = self._has_project_evidence(rag_chunks)
+        if intent == "project_knowledge" and not has_project_evidence:
+            return self._answer_without_project_evidence(question)
         context = {
             "project": {"name": project.name, "deploy_type": project.deploy_type, "health_url": project.health_url},
-            "rag_chunks": [self._source_dict(chunk) | {"content": chunk.content[:1200]} for chunk in rag_chunks],
+            "project_evidence_available": has_project_evidence,
+            "rag_chunks": [self._source_dict(chunk) | {"content": chunk.content[:1200]} for chunk in rag_chunks if chunk.score > 0.05],
             "command_results": [
                 {
                     "command": run.command,
@@ -309,7 +352,10 @@ class AgentPipeline:
         fallback = self._fallback_answer(question, intent, rag_chunks, command_runs)
         system = (
             "You are ResultAnalyzer for Ops Agent Chat V1. Answer in Chinese. "
-            "Use only provided RAG chunks and command outputs. Separate conclusion, evidence, and next steps. "
+            "Use command outputs and provided project RAG chunks when they exist. "
+            "If project_evidence_available is false, explicitly say no current project document evidence was found. "
+            "Do not invent project-specific ports, passwords, service names, paths, commands, or deployment details. "
+            "Separate conclusion, evidence, and next steps. "
             "Use plain section headings exactly as 诊断结论, 证据, 下一步建议. "
             "Never output headings such as 结论, 证据, 后续建议, 下一步建议 with quotes, markdown bold, code fences, or JSON. "
             "Do not claim a command succeeded if status or exit_code says otherwise. Do not suggest executing change commands directly in V1."
@@ -317,6 +363,34 @@ class AgentPipeline:
         user = json.dumps({"question": question, "context": context}, ensure_ascii=False)
         answer = self.llm.text_completion(system, user, fallback)
         return self._normalize_answer_text(answer)
+
+    def _answer_general(self, question: str) -> str:
+        fallback = self._fallback_general_answer(question)
+        system = (
+            "You are Ops Agent Chat. Answer in Chinese using general DevOps knowledge only. "
+            "Do not claim to know this user's current project configuration, ports, passwords, paths, service names, or runtime status. "
+            "Use plain section headings exactly as 诊断结论, 证据, 下一步建议. "
+            "Keep the answer concise and practical. Do not output markdown bold headings, quotes, code fences, or JSON."
+        )
+        answer = self.llm.text_completion(system, question, fallback)
+        return self._normalize_answer_text(answer)
+
+    def _answer_without_project_evidence(self, question: str) -> str:
+        fallback = self._fallback_no_project_evidence_answer(question)
+        system = (
+            "You are Ops Agent Chat. The project knowledge base did not return reliable evidence for the user's question. "
+            "Answer in Chinese. First state that no current project document evidence was found. "
+            "Then provide general DevOps guidance if useful. "
+            "Do not invent project-specific ports, passwords, service names, paths, commands, or deployment details. "
+            "Suggest adding project docs or asking for a read-only runtime diagnosis when appropriate. "
+            "Use plain section headings exactly as 诊断结论, 证据, 下一步建议. "
+            "Do not output markdown bold headings, quotes, code fences, or JSON."
+        )
+        answer = self.llm.text_completion(system, question, fallback)
+        return self._normalize_answer_text(answer)
+
+    def _has_project_evidence(self, chunks: list[RetrievedChunk]) -> bool:
+        return any(chunk.score > 0.05 for chunk in chunks)
 
     def _normalize_answer_text(self, answer: str) -> str:
         title_map = {
@@ -371,7 +445,33 @@ class AgentPipeline:
                 lines.append(f"- 来源 `{chunk.file_name}`：{excerpt}")
             lines.append("如果你要我检查当前运行状态，请问“为什么项目打不开？”或“帮我看后端日志”，V1 会执行只读诊断命令。")
             return "\n".join(lines)
+        if intent == "project_knowledge":
+            return self._fallback_no_project_evidence_answer(question)
+        if intent == "general":
+            return self._fallback_general_answer(question)
         return "我暂时没有足够证据回答这个问题。"
+
+    def _fallback_general_answer(self, question: str) -> str:
+        return (
+            "诊断结论\n"
+            "这是一个通用技术问题，可以基于通用运维知识先做解释；该回答不引用当前项目文档，也不代表当前项目的实际配置。\n\n"
+            "证据\n"
+            f"用户问题：{question}\n"
+            "当前问题没有要求读取项目配置或检查实时运行状态。\n\n"
+            "下一步建议\n"
+            "如果你想确认当前项目里的真实状态，请明确让我检查服务状态、日志或健康接口；如果你想确认项目配置，请补充或更新项目文档。"
+        )
+
+    def _fallback_no_project_evidence_answer(self, question: str) -> str:
+        return (
+            "诊断结论\n"
+            "当前项目知识库没有检索到足够可靠的项目文档依据，因此不能确认这个项目的具体配置或实现细节。\n\n"
+            "证据\n"
+            f"用户问题：{question}\n"
+            "没有可用的高相关项目文档片段支持直接回答。\n\n"
+            "下一步建议\n"
+            "可以先按通用运维思路检查服务是否运行、端口是否连通、环境变量是否加载、容器网络是否正常、日志是否有错误。以上是通用建议，不代表当前项目一定采用这些配置。你也可以补充项目文档，或让我执行 V1 允许的只读诊断。"
+        )
 
     def _source_dict(self, chunk: RetrievedChunk) -> dict[str, Any]:
         return {
