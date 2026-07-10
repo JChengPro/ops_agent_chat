@@ -9,7 +9,6 @@ import {
   FileSearch,
   Folder,
   FolderOpen,
-  GitBranch,
   Lightbulb,
   LogOut,
   MessageSquare,
@@ -33,7 +32,7 @@ import {
 } from "../api/ops";
 import type { ChatMessage, ChatSession, CommandRun, Project, RagDocument, User } from "../api/types";
 
-type TabKey = "commands" | "facts" | "runbook" | "config";
+type TabKey = "commands" | "runbook" | "config";
 
 export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -216,12 +215,10 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
       <aside className="glass-panel right-pane">
         <div className="tabs">
           <button className={rightTab === "commands" ? "active" : ""} onClick={() => setRightTab("commands")}><TerminalSquare size={16} />命令</button>
-          <button className={rightTab === "facts" ? "active" : ""} onClick={() => setRightTab("facts")}><GitBranch size={16} />事实</button>
           <button className={rightTab === "runbook" ? "active" : ""} onClick={() => setRightTab("runbook")}><BookOpenText size={16} />Runbook</button>
           <button className={rightTab === "config" ? "active" : ""} onClick={() => setRightTab("config")}><Settings size={16} />配置</button>
         </div>
         {rightTab === "commands" && <CommandHistory runs={runs} />}
-        {rightTab === "facts" && currentProject && <ProjectFacts project={currentProject} />}
         {rightTab === "runbook" && <Runbook docs={docs} projectId={projectId} onUploaded={(doc) => setDocs((items) => [...items, doc])} />}
         {rightTab === "config" && currentProject && <ProjectConfig project={currentProject} />}
       </aside>
@@ -472,26 +469,6 @@ function formatRunTime(run: CommandRun) {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function ProjectFacts({ project }: { project: Project }) {
-  const services = project.known_services ?? [];
-  const prefixes = project.allowed_container_prefixes ?? [];
-  return (
-    <div className="side-card config-list">
-      <h3>项目事实</h3>
-      <p><span>项目</span>{project.name}</p>
-      <p><span>部署类型</span>{project.deploy_type}</p>
-      <p><span>部署目录</span>{project.workdir || "未配置"}</p>
-      <p><span>健康检查</span>{project.health_url || "未配置"}</p>
-      <p><span>运行范围</span>{prefixes.length ? prefixes.join(", ") : "未配置"}</p>
-      <div className="fact-group">
-        <strong>已知服务</strong>
-        {services.length === 0 && <small>暂未采集服务事实</small>}
-        {services.map((service) => <em key={service}>{service}</em>)}
-      </div>
-    </div>
-  );
 }
 
 function Runbook({ docs, projectId, onUploaded }: { docs: RagDocument[]; projectId: number | null; onUploaded: (doc: RagDocument) => void }) {
