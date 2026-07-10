@@ -664,7 +664,7 @@ code {
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 14px;
   padding: 4px;
@@ -839,6 +839,38 @@ code {
 
 .config-list p:first-of-type { border-top: 0; }
 .config-list span { color: var(--muted); }
+
+.fact-group {
+  border-top: 1px solid var(--border);
+  padding: 13px 6px 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.fact-group strong {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.fact-group small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.fact-group em {
+  font-style: normal;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 650;
+}
 
 @media (max-width: 1180px) {
   .workspace { grid-template-columns: 280px minmax(480px, 1fr); }

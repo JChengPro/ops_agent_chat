@@ -3,12 +3,13 @@ import {
   ChevronDown,
   ChevronRight,
   CircleCheck,
+  BookOpenText,
   Code2,
-  Database,
   FileText,
   FileSearch,
   Folder,
   FolderOpen,
+  GitBranch,
   Lightbulb,
   LogOut,
   MessageSquare,
@@ -32,7 +33,7 @@ import {
 } from "../api/ops";
 import type { ChatMessage, ChatSession, CommandRun, Project, RagDocument, User } from "../api/types";
 
-type TabKey = "commands" | "docs" | "config";
+type TabKey = "commands" | "facts" | "runbook" | "config";
 
 export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -215,11 +216,13 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
       <aside className="glass-panel right-pane">
         <div className="tabs">
           <button className={rightTab === "commands" ? "active" : ""} onClick={() => setRightTab("commands")}><TerminalSquare size={16} />命令</button>
-          <button className={rightTab === "docs" ? "active" : ""} onClick={() => setRightTab("docs")}><Database size={16} />知识库</button>
+          <button className={rightTab === "facts" ? "active" : ""} onClick={() => setRightTab("facts")}><GitBranch size={16} />事实</button>
+          <button className={rightTab === "runbook" ? "active" : ""} onClick={() => setRightTab("runbook")}><BookOpenText size={16} />Runbook</button>
           <button className={rightTab === "config" ? "active" : ""} onClick={() => setRightTab("config")}><Settings size={16} />配置</button>
         </div>
         {rightTab === "commands" && <CommandHistory runs={runs} />}
-        {rightTab === "docs" && <Knowledge docs={docs} projectId={projectId} onUploaded={(doc) => setDocs((items) => [...items, doc])} />}
+        {rightTab === "facts" && currentProject && <ProjectFacts project={currentProject} />}
+        {rightTab === "runbook" && <Runbook docs={docs} projectId={projectId} onUploaded={(doc) => setDocs((items) => [...items, doc])} />}
         {rightTab === "config" && currentProject && <ProjectConfig project={currentProject} />}
       </aside>
     </main>
@@ -369,13 +372,15 @@ function normalizeSectionTitle(line: string) {
 function inferTitle(content: string) {
   if (content.includes("V1 只支持")) return "风险提示";
   if (content.includes("命令") || content.includes("exit_code")) return "诊断结论";
-  if (content.includes("知识库") || content.includes("来源")) return "知识库回答";
+  if (content.includes("项目事实") || content.includes("项目证据") || content.includes("来源")) return "项目证据";
   return "回答";
 }
 
 function intentLabel(intent: string) {
   if (intent === "diagnosis") return "诊断结果";
-  if (intent === "knowledge") return "知识库回答";
+  if (intent === "project_knowledge" || intent === "knowledge") return "项目事实";
+  if (intent === "general_chat") return "通用聊天";
+  if (intent === "general_tech") return "通用技术";
   if (intent === "operation") return "风险提示";
   if (intent === "mixed") return "综合分析";
   return "回答";
@@ -391,7 +396,7 @@ function sourceFiles(message: ChatMessage, docs: RagDocument[]) {
     .map((item) => (typeof item === "object" && item && "source" in item ? String((item as { source?: unknown }).source) : ""))
     .filter(Boolean);
   if (sourceNames.length) return Array.from(new Set(sourceNames));
-  if (message.metadata_json?.intent === "knowledge") return docs.slice(0, 3).map((doc) => doc.file_name);
+  if (["knowledge", "project_knowledge"].includes(String(message.metadata_json?.intent))) return docs.slice(0, 3).map((doc) => doc.file_name);
   return [];
 }
 
@@ -469,7 +474,27 @@ function formatRunTime(run: CommandRun) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function Knowledge({ docs, projectId, onUploaded }: { docs: RagDocument[]; projectId: number | null; onUploaded: (doc: RagDocument) => void }) {
+function ProjectFacts({ project }: { project: Project }) {
+  const services = project.known_services ?? [];
+  const prefixes = project.allowed_container_prefixes ?? [];
+  return (
+    <div className="side-card config-list">
+      <h3>项目事实</h3>
+      <p><span>项目</span>{project.name}</p>
+      <p><span>部署类型</span>{project.deploy_type}</p>
+      <p><span>部署目录</span>{project.workdir || "未配置"}</p>
+      <p><span>健康检查</span>{project.health_url || "未配置"}</p>
+      <p><span>运行范围</span>{prefixes.length ? prefixes.join(", ") : "未配置"}</p>
+      <div className="fact-group">
+        <strong>已知服务</strong>
+        {services.length === 0 && <small>暂未采集服务事实</small>}
+        {services.map((service) => <em key={service}>{service}</em>)}
+      </div>
+    </div>
+  );
+}
+
+function Runbook({ docs, projectId, onUploaded }: { docs: RagDocument[]; projectId: number | null; onUploaded: (doc: RagDocument) => void }) {
   const [uploading, setUploading] = useState(false);
   async function upload(file: File | undefined) {
     if (!file || !projectId || uploading) return;
@@ -482,11 +507,12 @@ function Knowledge({ docs, projectId, onUploaded }: { docs: RagDocument[]; proje
   }
   return (
     <div className="side-card">
-      <h3>知识库</h3>
+      <h3>Runbook</h3>
       <label className="upload-line">
         <input type="file" accept=".md,.txt" onChange={(event) => upload(event.target.files?.[0])} />
-        <span>{uploading ? "上传中..." : "上传文档"}</span>
+        <span>{uploading ? "上传中..." : "上传经验文档"}</span>
       </label>
+      <p className="empty-note">Runbook 用于项目专属 FAQ、历史故障和人工经验，不作为主知识路径。</p>
       {docs.map((doc) => <div key={doc.id} className="doc-row"><strong>{doc.file_name}</strong><span>{doc.doc_type} · {doc.chunk_count} chunks</span></div>)}
     </div>
   );
