@@ -5,6 +5,7 @@ import {
   CircleCheck,
   BookOpenText,
   Code2,
+  Edit3,
   FileText,
   FileSearch,
   Folder,
@@ -12,27 +13,40 @@ import {
   Lightbulb,
   LogOut,
   MessageSquare,
+  MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Pin,
+  PinOff,
   Plus,
   Send,
   Settings,
   ShieldAlert,
   Target,
   TerminalSquare,
+  Trash2,
   UserCircle,
 } from "lucide-react";
 import {
   createSession,
+  deleteProject,
+  deleteSession,
   listCommandRuns,
   listMessages,
   listProjects,
   listRagDocuments,
   listSessions,
   sendMessage,
+  updateProject,
+  updateSession,
   uploadRagDocument,
 } from "../api/ops";
 import type { ChatMessage, ChatSession, CommandRun, Project, RagDocument, User } from "../api/types";
 
 type TabKey = "commands" | "runbook" | "config";
+type EntityMenu = { type: "project" | "session"; id: number } | null;
 
 export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -45,7 +59,12 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [rightTab, setRightTab] = useState<TabKey>("commands");
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [messageNavOpen, setMessageNavOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<EntityMenu>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messageRefs = useRef<Record<number, HTMLElement | null>>({});
 
   const currentProject = useMemo(() => projects.find((item) => item.id === projectId) ?? null, [projects, projectId]);
   const currentSession = useMemo(() => sessions.find((item) => item.id === sessionId) ?? null, [sessions, sessionId]);
@@ -53,7 +72,7 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
   useEffect(() => {
     listProjects().then((items) => {
       setProjects(items);
-      if (items[0]) setProjectId(items[0].id);
+      setProjectId(items[0]?.id ?? null);
     });
   }, []);
 
@@ -90,6 +109,10 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, runs, sending]);
 
+  useEffect(() => {
+    setOpenMenu(null);
+  }, [projectId, sessionId]);
+
   async function newSession() {
     if (!projectId) return;
     const created = await createSession(projectId);
@@ -97,6 +120,71 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
     setSessionId(created.id);
     setMessages([]);
     setRuns([]);
+  }
+
+  async function renameProject(project: Project) {
+    setOpenMenu(null);
+    const name = window.prompt("重命名项目", project.name)?.trim();
+    if (!name || name === project.name) return;
+    const updated = await updateProject(project.id, { name });
+    setProjects((items) => sortProjects(items.map((item) => (item.id === updated.id ? updated : item))));
+  }
+
+  async function toggleProjectPin(project: Project) {
+    setOpenMenu(null);
+    const updated = await updateProject(project.id, { is_pinned: !project.is_pinned });
+    setProjects((items) => sortProjects(items.map((item) => (item.id === updated.id ? updated : item))));
+  }
+
+  async function removeProject(project: Project) {
+    setOpenMenu(null);
+    if (!window.confirm(`删除项目“${project.name}”？聊天和命令记录不会物理删除，但项目会从列表隐藏。`)) return;
+    await deleteProject(project.id);
+    setProjects((items) => {
+      const next = items.filter((item) => item.id !== project.id);
+      if (project.id === projectId) setProjectId(next[0]?.id ?? null);
+      return next;
+    });
+    if (project.id === projectId) {
+      setSessions([]);
+      setMessages([]);
+      setRuns([]);
+      setDocs([]);
+      setSessionId(null);
+    }
+  }
+
+  async function renameSession(session: ChatSession) {
+    setOpenMenu(null);
+    const title = window.prompt("重命名聊天", session.title)?.trim();
+    if (!title || title === session.title) return;
+    const updated = await updateSession(session.id, { title });
+    setSessions((items) => sortSessions(items.map((item) => (item.id === updated.id ? updated : item))));
+  }
+
+  async function toggleSessionPin(session: ChatSession) {
+    setOpenMenu(null);
+    const updated = await updateSession(session.id, { is_pinned: !session.is_pinned });
+    setSessions((items) => sortSessions(items.map((item) => (item.id === updated.id ? updated : item))));
+  }
+
+  async function removeSession(session: ChatSession) {
+    setOpenMenu(null);
+    if (!window.confirm(`删除聊天“${session.title}”？`)) return;
+    await deleteSession(session.id);
+    setSessions((items) => {
+      const next = items.filter((item) => item.id !== session.id);
+      if (session.id === sessionId) setSessionId(next[0]?.id ?? null);
+      return next;
+    });
+    if (session.id === sessionId) {
+      setMessages([]);
+      setRuns([]);
+    }
+  }
+
+  function jumpToMessage(messageId: number) {
+    messageRefs.current[messageId]?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   async function submit(event: FormEvent) {
@@ -138,8 +226,45 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
   }
 
   return (
-    <main className="workspace">
+    <main
+      className={`workspace ${leftCollapsed ? "left-collapsed" : ""} ${rightCollapsed ? "right-collapsed" : ""}`}
+      onClick={() => setOpenMenu(null)}
+    >
+      {leftCollapsed && (
+        <button
+          className="collapsed-open left-open"
+          onClick={(event) => {
+            event.stopPropagation();
+            setLeftCollapsed(false);
+          }}
+          title="打开边栏"
+        >
+          <PanelLeftOpen size={18} />
+        </button>
+      )}
+      {rightCollapsed && (
+        <button
+          className="collapsed-open right-open"
+          onClick={(event) => {
+            event.stopPropagation();
+            setRightCollapsed(false);
+          }}
+          title="打开边栏"
+        >
+          <PanelRightOpen size={18} />
+        </button>
+      )}
       <aside className="glass-panel left-pane">
+        <button
+          className="pane-toggle"
+          onClick={(event) => {
+            event.stopPropagation();
+            setLeftCollapsed(true);
+          }}
+          title="关闭边栏"
+        >
+          <PanelLeftClose size={17} />
+        </button>
         <div className="workspace-brand">
           <div className="brand-chip"><span>&gt;_</span></div>
           <strong>Ops Agent Chat</strong>
@@ -154,11 +279,31 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
             {projects.map((project) => {
               const active = project.id === projectId;
               return (
-                <button key={project.id} className={active ? "project-item selected" : "project-item"} onClick={() => setProjectId(project.id)}>
-                  {active ? <FolderOpen size={19} /> : <Folder size={19} />}
-                  <span>{project.name}</span>
-                  <i aria-label={active ? "当前项目" : "项目可用"} />
-                </button>
+                <div key={project.id} className={active ? "nav-row selected" : "nav-row"}>
+                  <button className="project-item" onClick={() => setProjectId(project.id)}>
+                    {active ? <FolderOpen size={19} /> : <Folder size={19} />}
+                    <span>{project.name}</span>
+                    {project.is_pinned ? <Pin size={14} className="pinned-mark" /> : <i aria-label={active ? "当前项目" : "项目可用"} />}
+                  </button>
+                  <button
+                    className="row-menu-trigger"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setOpenMenu((value) => value?.type === "project" && value.id === project.id ? null : { type: "project", id: project.id });
+                    }}
+                    title="项目操作"
+                  >
+                    <MoreHorizontal size={17} />
+                  </button>
+                  {openMenu?.type === "project" && openMenu.id === project.id && (
+                    <ActionMenu
+                      pinned={project.is_pinned}
+                      onRename={() => renameProject(project)}
+                      onTogglePin={() => toggleProjectPin(project)}
+                      onDelete={() => removeProject(project)}
+                    />
+                  )}
+                </div>
               );
             })}
           </div>
@@ -171,10 +316,31 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
           </div>
           <div className="session-scroll">
             {sessions.map((session) => (
-              <button key={session.id} className={session.id === sessionId ? "session-item selected" : "session-item"} onClick={() => setSessionId(session.id)}>
-                <MessageSquare size={16} />
-                <span>{session.title}</span>
-              </button>
+              <div key={session.id} className={session.id === sessionId ? "nav-row selected" : "nav-row"}>
+                <button className="session-item" onClick={() => setSessionId(session.id)}>
+                  <MessageSquare size={16} />
+                  <span>{session.title}</span>
+                  {session.is_pinned && <Pin size={14} className="pinned-mark" />}
+                </button>
+                <button
+                  className="row-menu-trigger"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpenMenu((value) => value?.type === "session" && value.id === session.id ? null : { type: "session", id: session.id });
+                  }}
+                  title="聊天操作"
+                >
+                  <MoreHorizontal size={17} />
+                </button>
+                {openMenu?.type === "session" && openMenu.id === session.id && (
+                  <ActionMenu
+                    pinned={session.is_pinned}
+                    onRename={() => renameSession(session)}
+                    onTogglePin={() => toggleSessionPin(session)}
+                    onDelete={() => removeSession(session)}
+                  />
+                )}
+              </div>
             ))}
           </div>
         </section>
@@ -188,8 +354,22 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
             <strong>{currentProject?.name ?? "Project"}</strong>
             <span>{currentSession?.title ?? "新会话"}</span>
           </div>
-          <span className="v1-badge">只读诊断</span>
+          <div className="chat-header-actions">
+            <button
+              className={messageNavOpen ? "outline-toggle active" : "outline-toggle"}
+              onClick={(event) => {
+                event.stopPropagation();
+                setMessageNavOpen((value) => !value);
+              }}
+              title={messageNavOpen ? "关闭消息导航" : "打开消息导航"}
+            >
+              <MessageSquare size={17} />
+            </button>
+            <span className="v1-badge">只读诊断</span>
+          </div>
         </header>
+
+        <MessageNavigatorFloating open={messageNavOpen} messages={messages} onJump={jumpToMessage} />
 
         <div className="message-list">
           {messages.length === 0 && !sending && (
@@ -200,7 +380,14 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
             </div>
           )}
           {messages.map((message) => (
-            <MessageCard key={message.id} message={message} runs={message.role === "assistant" ? runsForMessage(message, runs) : []} />
+            <MessageCard
+              key={message.id}
+              message={message}
+              runs={message.role === "assistant" ? runsForMessage(message, runs) : []}
+              refCallback={(element) => {
+                messageRefs.current[message.id] = element;
+              }}
+            />
           ))}
           {sending && <ThinkingCard />}
           <div ref={messagesEndRef} />
@@ -213,10 +400,22 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
       </section>
 
       <aside className="glass-panel right-pane">
-        <div className="tabs">
-          <button className={rightTab === "commands" ? "active" : ""} onClick={() => setRightTab("commands")}><TerminalSquare size={16} />命令</button>
-          <button className={rightTab === "runbook" ? "active" : ""} onClick={() => setRightTab("runbook")}><BookOpenText size={16} />经验库</button>
-          <button className={rightTab === "config" ? "active" : ""} onClick={() => setRightTab("config")}><Settings size={16} />配置</button>
+        <div className="right-pane-head">
+          <button
+            className="pane-toggle"
+            onClick={(event) => {
+              event.stopPropagation();
+              setRightCollapsed(true);
+            }}
+            title="关闭边栏"
+          >
+            <PanelRightClose size={17} />
+          </button>
+          <div className="tabs">
+            <button className={rightTab === "commands" ? "active" : ""} onClick={() => setRightTab("commands")}><TerminalSquare size={16} />命令</button>
+            <button className={rightTab === "runbook" ? "active" : ""} onClick={() => setRightTab("runbook")}><BookOpenText size={16} />经验库</button>
+            <button className={rightTab === "config" ? "active" : ""} onClick={() => setRightTab("config")}><Settings size={16} />配置</button>
+          </div>
         </div>
         {rightTab === "commands" && <CommandHistory runs={runs} />}
         {rightTab === "runbook" && <Runbook docs={docs} projectId={projectId} onUploaded={(doc) => setDocs((items) => [...items, doc])} />}
@@ -226,10 +425,18 @@ export function WorkspacePage({ user, onLogout }: { user: User; onLogout: () => 
   );
 }
 
-function MessageCard({ message, runs }: { message: ChatMessage; runs: CommandRun[] }) {
+function MessageCard({
+  message,
+  runs,
+  refCallback,
+}: {
+  message: ChatMessage;
+  runs: CommandRun[];
+  refCallback: (element: HTMLElement | null) => void;
+}) {
   if (message.role === "user") {
     return (
-      <article className="message user">
+      <article className="message user" ref={refCallback}>
         <div className="user-bubble">{message.content}</div>
         <div className="avatar user-avatar"><UserCircle size={24} /></div>
       </article>
@@ -241,7 +448,7 @@ function MessageCard({ message, runs }: { message: ChatMessage; runs: CommandRun
   const sections = splitAnswer(message.content);
 
   return (
-    <article className="message assistant">
+    <article className="message assistant" ref={refCallback}>
       <div className="avatar bot-avatar"><Code2 size={18} /></div>
       <div className={`assistant-card ${intent}`}>
         <div className="answer-header">
@@ -265,6 +472,42 @@ function ThinkingCard() {
         <div className="typing-line"><span /> <span /> <span /></div>
       </div>
     </article>
+  );
+}
+
+function ActionMenu({
+  pinned,
+  onRename,
+  onTogglePin,
+  onDelete,
+}: {
+  pinned: boolean;
+  onRename: () => void;
+  onTogglePin: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="action-menu" onClick={(event) => event.stopPropagation()}>
+      <button onClick={onRename}><Edit3 size={16} />重命名</button>
+      <button onClick={onTogglePin}>{pinned ? <PinOff size={16} /> : <Pin size={16} />}{pinned ? "取消置顶" : "置顶"}</button>
+      <button className="danger" onClick={onDelete}><Trash2 size={16} />删除</button>
+    </div>
+  );
+}
+
+function MessageNavigatorFloating({ open, messages, onJump }: { open: boolean; messages: ChatMessage[]; onJump: (messageId: number) => void }) {
+  const navigable = messages.filter((message) => message.role === "user" || message.role === "assistant");
+  return (
+    <aside className={open ? "message-outline open" : "message-outline"}>
+      <h3>消息导航</h3>
+      {navigable.length === 0 && <p className="empty-note">当前会话还没有消息。</p>}
+      {navigable.map((message) => (
+        <button key={message.id} className={`message-nav-row ${message.role}`} onClick={() => onJump(message.id)}>
+          <span>{message.role === "user" ? "你" : "Agent"}</span>
+          <strong>{messagePreview(message.content)}</strong>
+        </button>
+      ))}
+    </aside>
   );
 }
 
@@ -396,6 +639,11 @@ function intentLabel(intent: string) {
   return "回答";
 }
 
+function messagePreview(content: string) {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.length > 42 ? `${normalized.slice(0, 42)}...` : normalized || "空消息";
+}
+
 function sourceFiles(message: ChatMessage) {
   const metadataSources = Array.isArray(message.metadata_json?.experience_sources)
     ? message.metadata_json.experience_sources
@@ -485,6 +733,14 @@ function formatRunTime(run: CommandRun) {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function sortProjects(items: Project[]) {
+  return [...items].sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || b.id - a.id);
+}
+
+function sortSessions(items: ChatSession[]) {
+  return [...items].sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || b.id - a.id);
 }
 
 function Runbook({ docs, projectId, onUploaded }: { docs: RagDocument[]; projectId: number | null; onUploaded: (doc: RagDocument) => void }) {

@@ -13,6 +13,7 @@ class ChatSessionOut(BaseModel):
     user_id: int
     title: str
     status: str
+    is_pinned: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -31,6 +32,11 @@ class ChatMessageOut(BaseModel):
 
 class ChatSendRequest(BaseModel):
     content: str
+
+
+class ChatSessionUpdate(BaseModel):
+    title: str | None = None
+    is_pinned: bool | None = None
 
 
 class ChatSendResponse(BaseModel):

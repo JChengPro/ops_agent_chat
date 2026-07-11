@@ -19,6 +19,19 @@ export function listProjects(): Promise<Project[]> {
   return apiFetch<Project[]>("/api/projects");
 }
 
+export function updateProject(projectId: number, payload: { name?: string; is_pinned?: boolean }): Promise<Project> {
+  return apiFetch<Project>(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteProject(projectId: number): Promise<Project> {
+  return apiFetch<Project>(`/api/projects/${projectId}`, {
+    method: "DELETE"
+  });
+}
+
 export function listSessions(projectId: number): Promise<ChatSession[]> {
   return apiFetch<ChatSession[]>(`/api/projects/${projectId}/chat-sessions`);
 }
@@ -27,6 +40,19 @@ export function createSession(projectId: number, title = "新会话"): Promise<C
   return apiFetch<ChatSession>(`/api/projects/${projectId}/chat-sessions`, {
     method: "POST",
     body: JSON.stringify({ title })
+  });
+}
+
+export function updateSession(sessionId: number, payload: { title?: string; is_pinned?: boolean }): Promise<ChatSession> {
+  return apiFetch<ChatSession>(`/api/chat-sessions/${sessionId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteSession(sessionId: number): Promise<ChatSession> {
+  return apiFetch<ChatSession>(`/api/chat-sessions/${sessionId}`, {
+    method: "DELETE"
   });
 }
 

@@ -36,6 +36,7 @@ class ProjectOut(BaseModel):
     allowed_container_prefixes: list[str]
     known_services: list[str]
     settings_json: dict[str, Any]
+    is_pinned: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -50,3 +51,8 @@ class ProjectCreate(BaseModel):
     health_url: str | None = None
     allowed_container_prefixes: list[str] = []
     known_services: list[str] = []
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    is_pinned: bool | None = None

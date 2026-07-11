@@ -8,7 +8,7 @@ from app.core.security import get_current_user
 from app.models.chat import ChatMessage, ChatSession
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.chat import ChatMessageOut, ChatSendRequest, ChatSendResponse, ChatSessionCreate, ChatSessionOut
+from app.schemas.chat import ChatMessageOut, ChatSendRequest, ChatSendResponse, ChatSessionCreate, ChatSessionOut, ChatSessionUpdate
 
 router = APIRouter(tags=["chat"])
 pipeline = AgentPipeline()
@@ -20,8 +20,8 @@ def list_sessions(project_id: int, user: User = Depends(get_current_user), db: S
     return list(
         db.scalars(
             select(ChatSession)
-            .where(ChatSession.project_id == project_id, ChatSession.user_id == user.id)
-            .order_by(ChatSession.updated_at.desc())
+            .where(ChatSession.project_id == project_id, ChatSession.user_id == user.id, ChatSession.status != "deleted")
+            .order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc(), ChatSession.id.desc())
         )
     )
 
@@ -36,6 +36,35 @@ def create_session(
     _ensure_project(db, project_id, user.id)
     session = ChatSession(project_id=project_id, user_id=user.id, title=payload.title or "新会话")
     db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.patch("/chat-sessions/{session_id}", response_model=ChatSessionOut)
+def update_session(
+    session_id: int,
+    payload: ChatSessionUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ChatSession:
+    session = _ensure_session(db, session_id, user.id)
+    if payload.title is not None:
+        title = payload.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Session title cannot be empty")
+        session.title = title[:200]
+    if payload.is_pinned is not None:
+        session.is_pinned = payload.is_pinned
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.delete("/chat-sessions/{session_id}", response_model=ChatSessionOut)
+def delete_session(session_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> ChatSession:
+    session = _ensure_session(db, session_id, user.id)
+    session.status = "deleted"
     db.commit()
     db.refresh(session)
     return session
@@ -84,14 +113,14 @@ def send_message(
 
 def _ensure_project(db: Session, project_id: int, user_id: int) -> Project:
     project = db.get(Project, project_id)
-    if not project or project.owner_id != user_id:
+    if not project or project.owner_id != user_id or not project.is_active:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
 
 
 def _ensure_session(db: Session, session_id: int, user_id: int) -> ChatSession:
     session = db.get(ChatSession, session_id)
-    if not session:
+    if not session or session.status == "deleted":
         raise HTTPException(status_code=404, detail="Session not found")
     _ensure_project(db, session.project_id, user_id)
     return session

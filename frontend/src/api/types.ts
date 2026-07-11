@@ -17,6 +17,7 @@ export type Project = {
   allowed_container_prefixes: string[];
   known_services: string[];
   settings_json: Record<string, unknown>;
+  is_pinned: boolean;
 };
 
 export type ChatSession = {
@@ -25,6 +26,7 @@ export type ChatSession = {
   user_id: number;
   title: string;
   status: string;
+  is_pinned: boolean;
 };
 
 export type ChatMessage = {

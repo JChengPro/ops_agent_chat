@@ -7,14 +7,20 @@ from app.core.security import get_current_user
 from app.models.project import Project
 from app.models.server import Server
 from app.models.user import User
-from app.schemas.project import ProjectCreate, ProjectOut, ServerOut
+from app.schemas.project import ProjectCreate, ProjectOut, ProjectUpdate, ServerOut
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 @router.get("", response_model=list[ProjectOut])
 def list_projects(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[Project]:
-    return list(db.scalars(select(Project).where(Project.owner_id == user.id, Project.is_active.is_(True)).order_by(Project.id)))
+    return list(
+        db.scalars(
+            select(Project)
+            .where(Project.owner_id == user.id, Project.is_active.is_(True))
+            .order_by(Project.is_pinned.desc(), Project.updated_at.desc(), Project.id.desc())
+        )
+    )
 
 
 @router.post("", response_model=ProjectOut)
@@ -32,18 +38,50 @@ def create_project(payload: ProjectCreate, user: User = Depends(get_current_user
 @router.get("/{project_id}", response_model=ProjectOut)
 def get_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Project:
     project = db.get(Project, project_id)
-    if not project or project.owner_id != user.id:
+    if not project or project.owner_id != user.id or not project.is_active:
         raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@router.patch("/{project_id}", response_model=ProjectOut)
+def update_project(
+    project_id: int,
+    payload: ProjectUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Project:
+    project = db.get(Project, project_id)
+    if not project or project.owner_id != user.id or not project.is_active:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Project name cannot be empty")
+        project.name = name[:120]
+    if payload.is_pinned is not None:
+        project.is_pinned = payload.is_pinned
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@router.delete("/{project_id}", response_model=ProjectOut)
+def delete_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Project:
+    project = db.get(Project, project_id)
+    if not project or project.owner_id != user.id or not project.is_active:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project.is_active = False
+    db.commit()
+    db.refresh(project)
     return project
 
 
 @router.get("/{project_id}/server", response_model=ServerOut)
 def get_project_server(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Server:
     project = db.get(Project, project_id)
-    if not project or project.owner_id != user.id:
+    if not project or project.owner_id != user.id or not project.is_active:
         raise HTTPException(status_code=404, detail="Project not found")
     server = db.get(Server, project.server_id)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     return server
-
