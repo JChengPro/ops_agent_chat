@@ -28,7 +28,7 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
       <form className="login-panel" onSubmit={submit}>
         <div className="brand-mark"><span>&gt;_</span></div>
         <h1>Ops Agent Chat</h1>
-        <p>V1 read-only ops</p>
+        <p>安全、可追踪的智能运维工作台</p>
         <label className="sr-only" htmlFor="login-username">用户名 / 邮箱</label>
         <div className="input-line">
           <UserIcon size={21} strokeWidth={2.15} />

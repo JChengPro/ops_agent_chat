@@ -1,57 +1,13 @@
-# VideoHub Deployment Notes
+# VideoHub 部署经验
 
-VideoHub is treated as a Docker Compose project in V1.
+VideoHub 的默认环境使用 Docker Compose。以下值必须由项目所有者在 Environment 中注册：
 
-## Expected Project Configuration
+- 真实工作目录；
+- Compose 文件相对路径；
+- SSH Connection 引用；
+- 健康端点；
+- 环境策略级别。
 
-The Ops Agent project configuration should contain:
+项目可能包含前端、后端、Worker、MySQL、Redis 和 RabbitMQ，实际服务名称只能来自 Compose Collector 或实时 `service.list` 证据。
 
-```text
-project_name: VideoHub
-deploy_type: docker_compose
-workdir: real VideoHub project directory
-compose_file: docker-compose.yml or docker-compose.prod.yml
-health_url: http://127.0.0.1:<port>/health
-```
-
-The `workdir` value is security-sensitive. It must be configured by the administrator and stored in the database. The Agent must not freely decide the working directory.
-
-## Expected Runtime Components
-
-VideoHub may include:
-
-```text
-frontend
-api/backend
-nginx
-mysql or postgresql
-redis
-rabbitmq or another queue
-```
-
-The exact service names must come from:
-
-```bash
-docker compose ps
-```
-
-Do not assume container names before checking actual runtime state.
-
-## Basic Health Check
-
-The configured health URL should be checked with:
-
-```bash
-curl -s -i http://127.0.0.1:<port>/health
-```
-
-If the health check fails, inspect:
-
-```text
-1. Docker Compose service status
-2. API logs
-3. Reverse proxy logs if Nginx is used
-4. Redis/database connectivity
-5. Disk and memory pressure
-```
-
+部署动作只能使用 `deployment.apply_registered` 或其他已注册变更能力。动作必须经过参数校验、Policy Engine、人工审批、执行前复核和执行后验证。模型不能提交任意 Compose 文件、主机、目录或 Shell 命令。

@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
@@ -21,15 +21,3 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-
-def init_database() -> None:
-    # Import model modules so SQLAlchemy registers metadata.
-    from app.models import approval, chat, command, project, rag, server, user  # noqa: F401
-
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    Base.metadata.create_all(bind=engine)
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT false"))
-        conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT false"))

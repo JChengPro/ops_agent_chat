@@ -1,145 +1,107 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent.pipeline import AgentPipeline
+from app.agent.service import create_run, message_out, start_run
+from app.api.deps import require_project
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.chat import ChatMessage, ChatSession
-from app.models.project import Project
+from app.models.project import Environment
 from app.models.user import User
-from app.schemas.chat import ChatMessageOut, ChatSendRequest, ChatSendResponse, ChatSessionCreate, ChatSessionOut, ChatSessionUpdate
 
 router = APIRouter(tags=["chat"])
-pipeline = AgentPipeline()
 
 
-@router.get("/projects/{project_id}/chat-sessions", response_model=list[ChatSessionOut])
-def list_sessions(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[ChatSession]:
-    _ensure_project(db, project_id, user.id)
-    return list(
-        db.scalars(
-            select(ChatSession)
-            .where(ChatSession.project_id == project_id, ChatSession.user_id == user.id, ChatSession.status != "deleted")
-            .order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc(), ChatSession.id.desc())
-        )
-    )
+class SessionCreate(BaseModel):
+    title: str = Field(default="New chat", max_length=200)
+    environment_id: int | None = None
 
 
-@router.post("/projects/{project_id}/chat-sessions", response_model=ChatSessionOut)
-def create_session(
-    project_id: int,
-    payload: ChatSessionCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> ChatSession:
-    _ensure_project(db, project_id, user.id)
-    session = ChatSession(project_id=project_id, user_id=user.id, title=payload.title or "新会话")
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-    return session
+class SessionPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    is_pinned: bool | None = None
 
 
-@router.patch("/chat-sessions/{session_id}", response_model=ChatSessionOut)
-def update_session(
-    session_id: int,
-    payload: ChatSessionUpdate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> ChatSession:
-    session = _ensure_session(db, session_id, user.id)
-    if payload.title is not None:
-        title = payload.title.strip()
-        if not title:
-            raise HTTPException(status_code=400, detail="Session title cannot be empty")
-        session.title = title[:200]
-    if payload.is_pinned is not None:
-        session.is_pinned = payload.is_pinned
-    db.commit()
-    db.refresh(session)
-    return session
+class MessageCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=20000)
 
 
-@router.delete("/chat-sessions/{session_id}", response_model=ChatSessionOut)
-def delete_session(session_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> ChatSession:
-    session = _ensure_session(db, session_id, user.id)
-    session.status = "deleted"
-    db.commit()
-    db.refresh(session)
-    return session
+def session_out(item: ChatSession) -> dict:
+    return {"id": item.id, "project_id": item.project_id, "environment_id": item.environment_id, "user_id": item.user_id, "title": item.title, "status": item.status, "is_pinned": item.is_pinned, "created_at": item.created_at, "updated_at": item.updated_at}
 
 
-@router.get("/chat-sessions/{session_id}/messages", response_model=list[ChatMessageOut])
-def list_messages(session_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[ChatMessage]:
-    session = _ensure_session(db, session_id, user.id)
-    return list(
-        db.scalars(select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at.asc()))
-    )
+@router.get("/projects/{project_id}/chat-sessions")
+def project_sessions(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    require_project(db, user, project_id)
+    return [session_out(item) for item in db.scalars(select(ChatSession).where(ChatSession.project_id == project_id, ChatSession.user_id == user.id, ChatSession.status != "deleted").order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc())).all()]
 
 
-@router.post("/chat-sessions/{session_id}/messages", response_model=ChatSendResponse)
-def send_message(
-    session_id: int,
-    payload: ChatSendRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> ChatSendResponse:
-    session = _ensure_session(db, session_id, user.id)
-    user_message = ChatMessage(
-        session_id=session.id,
-        project_id=session.project_id,
-        role="user",
-        content=payload.content,
-        message_type="text",
-        metadata_json={},
-    )
-    db.add(user_message)
-    db.flush()
-    response = pipeline.handle_user_message(db, session, user_message)
-    if session.title == "新会话":
-        session.title = payload.content[:40]
-    db.commit()
-    db.refresh(response.assistant_message)
-    return ChatSendResponse(
-        assistant_message=ChatMessageOut.model_validate(response.assistant_message),
-        command_runs=[_run_to_dict(run) for run in response.command_runs],
-        command_plan=response.command_plan,
-        experience_sources=response.rag_sources,
-        rag_sources=response.rag_sources,
-        approval_request=None,
-    )
+@router.post("/projects/{project_id}/chat-sessions")
+def create_project_session(project_id: int, payload: SessionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    require_project(db, user, project_id)
+    environment_id = payload.environment_id or db.scalar(select(Environment.id).where(Environment.project_id == project_id, Environment.is_active.is_(True)).order_by(Environment.is_default.desc()).limit(1))
+    environment = db.get(Environment, environment_id) if environment_id else None
+    if not environment or environment.project_id != project_id or not environment.is_active:
+        raise HTTPException(400, "Environment does not belong to the selected project")
+    row = ChatSession(project_id=project_id, environment_id=environment_id, user_id=user.id, title=payload.title)
+    db.add(row); db.commit(); db.refresh(row); return session_out(row)
 
 
-def _ensure_project(db: Session, project_id: int, user_id: int) -> Project:
-    project = db.get(Project, project_id)
-    if not project or project.owner_id != user_id or not project.is_active:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
+@router.get("/chat-sessions")
+def general_sessions(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return [session_out(item) for item in db.scalars(select(ChatSession).where(ChatSession.project_id.is_(None), ChatSession.user_id == user.id, ChatSession.status != "deleted").order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc())).all()]
 
 
-def _ensure_session(db: Session, session_id: int, user_id: int) -> ChatSession:
+@router.post("/chat-sessions")
+def create_general_session(payload: SessionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = ChatSession(project_id=None, environment_id=None, user_id=user.id, title=payload.title)
+    db.add(row); db.commit(); db.refresh(row); return session_out(row)
+
+
+@router.patch("/chat-sessions/{session_id}")
+def patch_session(session_id: int, payload: SessionPatch, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = db.get(ChatSession, session_id)
+    if not row or row.user_id != user.id: raise HTTPException(404, "Chat session not found")
+    for key, value in payload.model_dump(exclude_unset=True).items(): setattr(row, key, value)
+    db.commit(); db.refresh(row); return session_out(row)
+
+
+@router.delete("/chat-sessions/{session_id}")
+def delete_session(session_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = db.get(ChatSession, session_id)
+    if not row or row.user_id != user.id: raise HTTPException(404, "Chat session not found")
+    row.status = "deleted"; db.commit(); return session_out(row)
+
+
+@router.get("/chat-sessions/{session_id}/messages")
+def messages(session_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = db.get(ChatSession, session_id)
+    if not row or row.user_id != user.id: raise HTTPException(404, "Chat session not found")
+    return [message_out(item) for item in db.scalars(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at, ChatMessage.id)).all()]
+
+
+@router.post("/chat-sessions/{session_id}/messages")
+def send_message(session_id: int, payload: MessageCreate, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     session = db.get(ChatSession, session_id)
-    if not session or session.status == "deleted":
-        raise HTTPException(status_code=404, detail="Session not found")
-    _ensure_project(db, session.project_id, user_id)
-    return session
+    if not session or session.user_id != user.id or session.status == "deleted": raise HTTPException(404, "Chat session not found")
+    if session.project_id:
+        require_project(db, user, session.project_id)
+        environment = db.get(Environment, session.environment_id) if session.environment_id else None
+        if not environment or not environment.is_active or environment.project_id != session.project_id:
+            raise HTTPException(409, "The chat environment is no longer active")
+    return start_run(db, request.app.state.ops_agent, session, user.id, payload.content)
 
 
-def _run_to_dict(run) -> dict:
-    return {
-        "id": run.id,
-        "command": run.command,
-        "cwd": run.cwd,
-        "purpose": run.purpose,
-        "risk_level": run.risk_level,
-        "status": run.status,
-        "exit_code": run.exit_code,
-        "stdout_excerpt": run.stdout_excerpt,
-        "stderr_excerpt": run.stderr_excerpt,
-        "duration_ms": run.duration_ms,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-        "ruleguard_result": run.ruleguard_result,
-    }
+@router.post("/chat-sessions/{session_id}/agent-runs")
+def queue_message(session_id: int, payload: MessageCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    session = db.get(ChatSession, session_id)
+    if not session or session.user_id != user.id or session.status == "deleted":
+        raise HTTPException(404, "Chat session not found")
+    if session.project_id:
+        require_project(db, user, session.project_id)
+        environment = db.get(Environment, session.environment_id) if session.environment_id else None
+        if not environment or not environment.is_active or environment.project_id != session.project_id:
+            raise HTTPException(409, "The chat environment is no longer active")
+    return create_run(db, session, user.id, payload.content)

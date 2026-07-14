@@ -32,5 +32,11 @@ function formatApiError(status: number, text: string): string {
   if (trimmed.startsWith("<!DOCTYPE html") || trimmed.startsWith("<html")) {
     return `请求失败，网关返回了 HTML 错误页（HTTP ${status}）。`;
   }
+  try {
+    const payload = JSON.parse(trimmed) as {error?:{message?:string};detail?:string};
+    return payload.error?.message || payload.detail || `Request failed: ${status}`;
+  } catch {
+    // Keep the original response when it is not JSON.
+  }
   return trimmed || `Request failed: ${status}`;
 }

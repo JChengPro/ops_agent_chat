@@ -23,3 +23,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
 def me(user: User = Depends(get_current_user)) -> User:
     return user
 
+
+@router.post("/logout", status_code=204)
+def logout() -> None:
+    return None

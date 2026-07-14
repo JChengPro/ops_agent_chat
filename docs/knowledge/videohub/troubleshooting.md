@@ -1,92 +1,17 @@
-# VideoHub Troubleshooting Guide
+# VideoHub 排障经验
 
-This file provides bootstrap troubleshooting knowledge for V1 RAG.
+## 项目不可用
 
-## Project Unavailable
-
-Recommended read-only diagnosis order:
-
-```text
-1. Check Docker Compose service status.
-2. Check API/backend recent logs.
-3. Check health endpoint.
-4. Check reverse proxy logs if Nginx exists.
-5. Check disk, memory, and listening ports.
-```
-
-Possible causes:
-
-```text
-API container exited
-API container restarting
-Health endpoint not listening
-Nginx upstream connection refused
-Database connection refused
-Redis connection refused
-Disk full
-Port conflict
-Missing or invalid environment variable
-```
+优先检查服务列表、后端状态、注册健康端点和后端有界日志，再根据实体关系检查数据库、缓存、消息队列与入口代理。常见原因包括服务退出或反复重启、健康端点未监听、依赖不可达、磁盘不足、端口冲突和环境配置错误。
 
 ## Nginx 502
 
-Nginx 502 usually means Nginx is reachable but the upstream service is not responding correctly.
+502 通常表示入口代理可访问，但上游未正常响应。应结合入口到后端的关系、后端当前状态、健康检查、监听端口和最近日志判断，不能仅凭通用知识声称具体根因。
 
-Check:
+## Redis 连接失败
 
-```text
-1. API container status
-2. API listening port
-3. Nginx upstream configuration
-4. API logs
-5. Health endpoint response
-```
+通用原因包括 Redis 未运行、地址或端口错误、认证不一致、容器网络别名不一致以及应用早于 Redis 就绪。具体项目结论必须来自 Project Context 或 Runtime Evidence。
 
-Useful read-only commands:
+## 磁盘不足
 
-```bash
-docker compose -f <compose_file> ps
-docker logs --tail 200 <api_container>
-curl -s -i http://127.0.0.1:<api_port>/health
-ss -lntp
-```
-
-## Redis Connection Failed
-
-Common causes:
-
-```text
-Redis container not running
-Wrong Redis host or port
-Redis password mismatch
-Network alias mismatch inside Docker Compose
-Application started before Redis became ready
-```
-
-Read-only checks:
-
-```bash
-docker compose -f <compose_file> ps
-docker logs --tail 200 <redis_container>
-docker logs --tail 200 <api_container>
-```
-
-## Disk Full
-
-Symptoms:
-
-```text
-Container cannot start
-Database write fails
-Log write fails
-Image pull or build fails
-```
-
-Read-only check:
-
-```bash
-df -h
-```
-
-V1 must not auto-clean disk. Cleanup commands are change operations and should be V2+ only.
-
+磁盘不足可能导致容器启动、数据库写入、日志写入和镜像构建失败。`host.disk_usage` 只读取状态；清理文件、镜像或数据属于未注册或需审批的变更，Agent 不得自行执行。

@@ -11,7 +11,8 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    environment_id: Mapped[int | None] = mapped_column(ForeignKey("environments.id"), nullable=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(200), default="New chat")
     status: Mapped[str] = mapped_column(String(40), default="active")
@@ -25,7 +26,7 @@ class ChatMessage(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("chat_sessions.id"), index=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(40))
     content: Mapped[str] = mapped_column(Text)
     message_type: Mapped[str] = mapped_column(String(60), default="text")

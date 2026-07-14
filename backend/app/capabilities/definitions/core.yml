@@ -1,0 +1,249 @@
+- name: project.context.get
+  description: Query verified entities and configuration for the selected project. Use for project-specific facts, never for live status.
+  effect: read
+  risk_level: L0
+  runtimes: [manual, docker_compose, kubernetes, systemd, mixed]
+  permission: project.read
+  approval_mode: never
+  executor: context
+  arguments:
+    query: {type: string, required: true, max_length: 500}
+
+- name: relationship.dependencies
+  description: Query direct and limited-depth dependencies for a registered project entity.
+  effect: read
+  risk_level: L0
+  runtimes: [manual, docker_compose, kubernetes, systemd, mixed]
+  permission: project.read
+  approval_mode: never
+  executor: context
+  arguments:
+    entity: {type: string, required: true, max_length: 255}
+    depth: {type: integer, default: 2, minimum: 1, maximum: 4}
+
+- name: relationship.impact
+  description: Query registered entities that can be affected by an entity failure.
+  effect: read
+  risk_level: L0
+  runtimes: [manual, docker_compose, kubernetes, systemd, mixed]
+  permission: project.read
+  approval_mode: never
+  executor: context
+  arguments:
+    entity: {type: string, required: true, max_length: 255}
+    depth: {type: integer, default: 2, minimum: 1, maximum: 4}
+
+- name: experience.search
+  description: Search verified project notes, incidents, deployment guidance and resolutions. This is historical context, not live state.
+  effect: read
+  risk_level: L0
+  runtimes: [manual, docker_compose, kubernetes, systemd, mixed]
+  permission: project.read
+  approval_mode: never
+  executor: experience
+  arguments:
+    query: {type: string, required: true, max_length: 500}
+    limit: {type: integer, default: 5, minimum: 1, maximum: 10}
+
+- name: service.list
+  description: List services in the selected environment and their current runtime state.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes, systemd]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments: {}
+
+- name: service.status
+  description: Get the current state of one registered service.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes, systemd]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments:
+    service: {type: string, required: true, max_length: 255}
+
+- name: service.logs
+  description: Read a bounded number of recent log lines for one registered service.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes, systemd]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments:
+    service: {type: string, required: true, max_length: 255}
+    tail: {type: integer, default: 100, minimum: 1, maximum: 1000}
+
+- name: service.inspect
+  description: Read registered runtime metadata for one service without changing it.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes, systemd]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments:
+    service: {type: string, required: true, max_length: 255}
+
+- name: http.health_check
+  description: Call a registered project health endpoint and return status and latency.
+  effect: read
+  risk_level: L0
+  runtimes: [manual, docker_compose, kubernetes, systemd, mixed]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments:
+    endpoint: {type: string, required: false, max_length: 255}
+
+- name: host.disk_usage
+  description: Read filesystem usage from the registered environment host.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, systemd, mixed]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments: {}
+
+- name: host.memory_usage
+  description: Read memory usage from the registered environment host.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, systemd, mixed]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments: {}
+
+- name: host.listening_ports
+  description: Read listening TCP ports from the registered environment host.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, systemd, mixed]
+  permission: runtime.read
+  approval_mode: never
+  executor: runtime
+  arguments: {}
+
+- name: service.restart
+  description: Restart exactly one registered service. Use only when the user explicitly requests the state change.
+  effect: change
+  risk_level: L2
+  runtimes: [docker_compose, kubernetes, systemd]
+  permission: runtime.change
+  approval_mode: always
+  executor: runtime
+  precheck: service.status
+  verifier: service.status
+  rollback: null
+  arguments:
+    service: {type: string, required: true, max_length: 255}
+
+- name: service.start
+  description: Start exactly one registered service after explicit user request and approval.
+  effect: change
+  risk_level: L2
+  runtimes: [docker_compose, kubernetes, systemd]
+  permission: runtime.change
+  approval_mode: always
+  executor: runtime
+  precheck: service.status
+  verifier: service.status
+  rollback: service.stop
+  arguments:
+    service: {type: string, required: true, max_length: 255}
+
+- name: service.stop
+  description: Stop exactly one registered service after explicit user request and approval.
+  effect: change
+  risk_level: L2
+  runtimes: [docker_compose, kubernetes, systemd]
+  permission: runtime.change
+  approval_mode: always
+  executor: runtime
+  precheck: service.status
+  verifier: service.status
+  rollback: service.start
+  arguments:
+    service: {type: string, required: true, max_length: 255}
+
+- name: service.scale
+  description: Set replicas for exactly one registered service after explicit user request and approval.
+  effect: change
+  risk_level: L2
+  runtimes: [docker_compose, kubernetes]
+  permission: runtime.change
+  approval_mode: always
+  executor: runtime
+  precheck: service.status
+  verifier: service.status
+  rollback: null
+  arguments:
+    service: {type: string, required: true, max_length: 255}
+    replicas: {type: integer, required: true, minimum: 0, maximum: 20}
+
+- name: deployment.apply_registered
+  description: Apply one deployment recipe that was registered by an administrator in the selected environment. The model cannot provide a path or command.
+  effect: change
+  risk_level: L2
+  runtimes: [docker_compose, kubernetes]
+  permission: runtime.change
+  approval_mode: always
+  executor: registered_deployment
+  precheck: deployment.verify_registered
+  verifier: deployment.verify_registered
+  rollback: null
+  arguments:
+    deployment: {type: string, required: true, max_length: 120}
+
+- name: deployment.verify_registered
+  description: Verify the runtime state of a registered deployment recipe.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes]
+  permission: runtime.read
+  approval_mode: never
+  executor: registered_deployment
+  arguments:
+    deployment: {type: string, required: true, max_length: 120}
+
+- name: config.update_registered
+  description: Apply one pre-registered configuration file change. The model cannot provide a path or content.
+  effect: change
+  risk_level: L2
+  runtimes: [docker_compose, kubernetes, systemd, mixed]
+  permission: runtime.change
+  approval_mode: always
+  executor: registered_config
+  precheck: config.precheck_registered
+  verifier: config.verify_registered
+  rollback: null
+  arguments:
+    change: {type: string, required: true, max_length: 120}
+
+- name: config.verify_registered
+  description: Verify the content hash of a pre-registered configuration change.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes, systemd, mixed]
+  permission: runtime.read
+  approval_mode: never
+  executor: registered_config
+  arguments:
+    change: {type: string, required: true, max_length: 120}
+
+- name: config.precheck_registered
+  description: Verify that a registered configuration target still matches its registered precondition before approval.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes, systemd, mixed]
+  permission: runtime.read
+  approval_mode: never
+  executor: registered_config
+  arguments:
+    change: {type: string, required: true, max_length: 120}

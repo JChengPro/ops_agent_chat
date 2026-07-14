@@ -1,121 +1,30 @@
-# Ops Agent Chat V1 Project Structure
+# 项目结构
 
-This document defines the target repository layout for the V1 implementation.
-
-V1 goal:
+Ops Agent Chat 使用模块化单 Agent。LLM 负责结构化理解和下一步选择，授权、参数校验、审批与执行由确定性服务端模块完成。
 
 ```text
-Login -> Project/session chat -> RAG answer or read-only command plan
--> RuleGuard -> SSH/localhost execution -> result analysis -> command history
+backend/
+  alembic/                 最终业务表迁移
+  app/
+    agent/                 LangGraph StateGraph、Run 启动与恢复
+    llm/                   Decision Schema、Provider Gateway
+    capabilities/          YAML 能力定义、Registry、参数 Schema
+    policy/                角色权限、风险判断、Action hash
+    runtime/
+      adapters/            Docker Compose、Kubernetes、systemd、HTTP、Host
+      transports/          SSH 连接与有界输出
+    context/               项目实体、关系和可插拔 Collector
+    experience/            项目经验切分、验证状态和检索
+    evidence/              Invocation 与 Runtime Evidence
+    audit/                 链式审计
+    api/                   FastAPI 资源接口
+    models/                SQLAlchemy 数据模型
+    core/                  配置、数据库和 JWT
+  tests/                   单元与 LangGraph 集成测试
+frontend/                  React 三栏工作台
+docs/knowledge/videohub/   默认项目经验种子
+infra/docker/postgres/     PostgreSQL 本地基础设施
 ```
 
-## Root Layout
-
-```text
-Ops_Agent_Chat/
-  backend/
-    app/
-      main.py
-      core/
-      models/
-      schemas/
-      api/
-      services/
-      agent/
-      ruleguard/
-      ssh/
-      rag/
-      repositories/
-      utils/
-    alembic/
-    tests/
-    Dockerfile
-    requirements.txt
-
-  frontend/
-    src/
-      api/
-      components/
-      pages/
-      router/
-      stores/
-      utils/
-    Dockerfile
-    package.json
-
-  docs/
-    architecture/
-    config/
-    database/
-    deployment/
-    knowledge/
-      videohub/
-    runbooks/
-
-  infra/
-    docker/
-      postgres/
-        docker-compose.pgvector.yml
-        init/
-
-  Ops_Agent_Chat项目设计相关文档/
-    Existing product and architecture design documents.
-
-  .env.example
-  docker-compose.yml
-  README.md
-```
-
-## Directory Responsibilities
-
-| Directory | Responsibility |
-|---|---|
-| `backend/` | FastAPI backend, LangGraph workflow, RuleGuard, SSH executor, RAG services |
-| `frontend/` | Chat workspace UI, login page, command cards, project context panel |
-| `docs/architecture/` | Architecture and project structure documents |
-| `docs/config/` | Runtime configuration, model configuration, environment variable guide |
-| `docs/database/` | PostgreSQL and pgvector setup documents |
-| `docs/deployment/` | Docker and one-click deployment design |
-| `docs/knowledge/videohub/` | Temporary VideoHub knowledge base used by V1 RAG |
-| `docs/runbooks/` | Operational runbooks for known diagnosis scenarios |
-| `infra/docker/` | Docker Compose and database initialization files |
-
-## V1 Scope Boundary
-
-V1 should not implement service restart, project stop, database mutation, or risky change operations.
-
-Allowed command category:
-
-```text
-Read-only diagnosis only.
-```
-
-Examples:
-
-```text
-docker ps
-docker compose ps
-docker logs --tail 200 <container>
-docker inspect <container>
-curl -s -i http://127.0.0.1:<port>/<path>
-df -h
-free -m
-ss -lntp
-```
-
-Rejected in V1:
-
-```text
-docker restart
-docker compose down
-docker compose up -d
-docker volume rm
-rm
-mv
-chmod
-chown
-sudo su
-bash -c
-sh -c
-```
+旧的关键词 Intent Router、自由命令计划、主 RAG Pipeline、`command_runs` 和 `rag_documents` 接口不属于当前实现。
 

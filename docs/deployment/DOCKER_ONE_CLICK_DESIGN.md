@@ -1,92 +1,25 @@
-# Docker One-Click Deployment Design
+# Docker Compose 部署
 
-Ops Agent Chat should eventually run with one command:
+仓库根目录执行：
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-## Target Services
+服务包括：
 
-```text
-frontend  -> browser UI
-backend   -> FastAPI, Agent workflow, RAG, RuleGuard, SSHExecutor
-postgres  -> PostgreSQL with pgvector extension
-```
+- `frontend`：Nginx 托管 React 静态资源并代理 `/api`；
+- `backend`：执行 Alembic 迁移后启动 FastAPI 和 LangGraph；
+- `postgres`：保存业务数据、审计、证据和 LangGraph checkpoint。
 
-Optional later:
+后端容器通过 `host.docker.internal` 连接 WSL/宿主的 SSH 服务。`extra_hosts` 配置位于本项目根目录的 `docker-compose.yml`，目标项目不需要修改。
 
-```text
-redis     -> background jobs, cache, progress state
-worker    -> async command execution and document indexing
-```
+密钥只通过只读 volume 挂载到 `/run/secrets`。数据库仅保存 `credential_ref`，不保存私钥内容。
 
-## V1 Compose Shape
+检查状态：
 
-```text
-docker-compose.yml
-  services:
-    postgres:
-      image: pgvector/pgvector:<postgres-version>
-      volumes:
-        - postgres_data:/var/lib/postgresql/data
-        - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d
-
-    backend:
-      build: ./backend
-      env_file: .env
-      depends_on:
-        - postgres
-
-    frontend:
-      build: ./frontend
-      depends_on:
-        - backend
-```
-
-## Localhost VideoHub Execution
-
-For V1, VideoHub is on the same server.
-
-The safest consistent design is still:
-
-```text
-backend container -> SSH to host 127.0.0.1 or host.docker.internal -> opsagent user -> VideoHub workdir
-```
-
-On Linux, `host.docker.internal` may need explicit Compose configuration:
-
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
-
-Then the configured SSH host can be:
-
-```env
-VIDEOHUB_SSH_HOST=host.docker.internal
-```
-
-If the backend runs directly on the host during development, use:
-
-```env
-VIDEOHUB_SSH_HOST=127.0.0.1
-```
-
-## Secrets
-
-Do not bake secrets into images.
-
-Use:
-
-```text
-.env for development
-Docker secrets or mounted files for SSH private keys
-```
-
-Recommended SSH key mount path inside backend container:
-
-```text
-/run/secrets/videohub_ssh_key
+```bash
+docker compose ps
+curl http://localhost:8000/health
 ```
 

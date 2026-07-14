@@ -36,6 +36,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
 
   frontend:
     build: ./frontend
@@ -44,7 +50,8 @@ services:
     ports:
       - "5175:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   ops_agent_postgres_data:

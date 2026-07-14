@@ -1,73 +1,17 @@
-# DeepSeek Model Configuration
+# LLM Provider 配置
 
-Ops Agent Chat V1 uses DeepSeek through an OpenAI-compatible API client.
-
-According to the official DeepSeek API docs, the OpenAI-compatible base URL is:
-
-```text
-https://api.deepseek.com
-```
-
-V1 model:
-
-```text
-deepseek-v4-pro
-```
-
-## Environment Variables
+后端通过 OpenAI 兼容接口调用结构化 Decision 模型，默认配置示例使用 DeepSeek，但业务代码不固定模型名称。
 
 ```env
 DEEPSEEK_API_KEY=replace-with-your-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 LLM_PROVIDER=deepseek
-LLM_MODEL=deepseek-v4-pro
-LLM_REASONING_EFFORT=high
-LLM_THINKING_ENABLED=true
+LLM_MODEL=填写账号实际可用的模型名称
+LLM_TIMEOUT_SECONDS=90
+AGENT_MAX_STEPS=6
+AGENT_MAX_TOOL_CALLS=8
 ```
 
-## Backend Client Shape
+Decision 使用 JSON Schema 输出目标、范围、时效、副作用和下一步工具调用。模型不能直接执行命令；输出还必须经过 Capability Schema 和 Policy Engine。格式修复最多一次，再次失败会安全降级并要求用户澄清，不会回退到关键词分类。
 
-The backend should use an OpenAI-compatible client with:
-
-```text
-base_url = DEEPSEEK_BASE_URL
-api_key = DEEPSEEK_API_KEY
-model = LLM_MODEL
-```
-
-For V1, do not enable streaming.
-
-```text
-stream = false
-```
-
-## Recommended Usage By Agent Node
-
-| Node | Model setting |
-|---|---|
-| IntentRouter | `deepseek-v4-pro`, JSON output, low temperature |
-| CommandAgent | `deepseek-v4-pro`, JSON output, low temperature |
-| RAG Answer | `deepseek-v4-pro`, normal answer, citations required |
-| ResultAnalyzer | `deepseek-v4-pro`, evidence-constrained answer |
-
-## JSON Output Requirement
-
-CommandAgent must return structured JSON, not prose.
-
-Example:
-
-```json
-{
-  "goal": "Check why VideoHub is unavailable",
-  "commands": [
-    {
-      "command": "docker compose -f docker-compose.yml ps",
-      "purpose": "Check Docker Compose service status",
-      "expected_risk_hint": "read_only"
-    }
-  ]
-}
-```
-
-The backend should validate this JSON with Pydantic before RuleGuard runs.
-
+当前接口使用非流式响应。模型调用会记录 provider、model、用途、耗时、token 数（Provider 返回时）和请求哈希，但不保存 API key。

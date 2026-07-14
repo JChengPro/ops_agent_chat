@@ -21,9 +21,11 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="deepseek-v4-pro", alias="LLM_MODEL")
     llm_reasoning_effort: str = Field(default="high", alias="LLM_REASONING_EFFORT")
     llm_thinking_enabled: bool = Field(default=True, alias="LLM_THINKING_ENABLED")
-
-    embedding_provider: str = "placeholder"
-    embedding_model: str = "placeholder"
+    llm_timeout_seconds: int = Field(default=90, alias="LLM_TIMEOUT_SECONDS")
+    agent_max_steps: int = Field(default=6, alias="AGENT_MAX_STEPS")
+    agent_max_tool_calls: int = Field(default=8, alias="AGENT_MAX_TOOL_CALLS")
+    agent_timeout_seconds: int = Field(default=300, alias="AGENT_TIMEOUT_SECONDS")
+    agent_context_max_chars: int = Field(default=60000, alias="AGENT_CONTEXT_MAX_CHARS")
 
     admin_username: str = "admin"
     admin_email: str = "admin@example.com"
@@ -38,12 +40,18 @@ class Settings(BaseSettings):
     videohub_ssh_port: int = 22
     videohub_ssh_username: str = "opsagent"
     videohub_ssh_key_path: str = ""
+    videohub_ssh_host_fingerprint: str = ""
+    ssh_strict_host_key_checking: bool = Field(default=False, alias="SSH_STRICT_HOST_KEY_CHECKING")
 
     knowledge_root: Path = Path("docs/knowledge")
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def checkpoint_database_url(self) -> str:
+        return self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
 @lru_cache

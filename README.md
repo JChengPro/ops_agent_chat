@@ -1,193 +1,142 @@
 # Ops Agent Chat
 
-Ops Agent Chat 是一个聊天式运维 Agent 工作台。当前 V1.1 版本以“通用问答 + 项目上下文 + 只读诊断”为核心：用户用自然语言提问，系统先判断问题类型，再决定直接调用 LLM、引用项目配置和经验库，或通过受限 SSH 执行只读诊断命令。
+Ops Agent Chat 是一个面向个人和小团队的通用智能运维工作台。它可以直接回答通用问题，也可以在选定项目后读取结构化项目上下文、获取实时运行证据，并通过策略与人工审批执行受控变更。
 
-V1.1 不把 RAG 当作所有问题的主路径。经验库只用于补充项目 README、部署说明、历史故障、FAQ 和人工处理记录；普通聊天和通用技术问题可以直接由 LLM 回答。
+系统不是“先做关键词分类，再匹配固定命令”。一次 LLM 结构化决策会同时理解目标、范围、时效和副作用，并从本轮允许的语义能力中选择下一步。所有工具调用仍由服务端的 Capability Registry、Policy Engine 和类型化 Runtime Adapter 约束，模型不能自行生成任意 Shell 或绕过审批。
 
-## 核心能力
+## 主要功能
 
-- 登录认证、管理员初始化和 JWT 会话。
-- 项目列表、会话列表、聊天消息和命令历史。
-- 项目和聊天支持重命名、置顶、软删除。
-- 左右侧栏支持折叠，中间聊天区作为主工作区。
-- 聊天区支持消息导航浮层，用于长会话快速定位。
-- Intent Router 区分 `general_chat`、`general_tech`、`project_knowledge`、`diagnosis`、`mixed`、`operation`。
-- 通用问题直接由 LLM 回答，不强制检索项目资料。
-- 项目问题基于项目配置和经验库回答；证据不足时明确说明不确定，不编造项目端口、密码、服务名或路径。
-- 诊断问题通过 SSH 执行只读命令，读取容器状态、日志、健康接口和基础资源状态。
-- RuleGuard 限制命令范围，默认拒绝重启、停止、删除、写入、权限变更等操作。
-- Docker Compose 一键启动前端、后端和 PostgreSQL + pgvector。
+- 无项目通用聊天、项目问答、实时调查和多步证据汇总。
+- 单 Agent LangGraph 工作流，使用 PostgreSQL checkpointer 持久化状态并支持审批暂停与恢复。
+- 前端先创建 Run 再执行，运行中可发送取消信号；后端会在节点和动作边界安全停止。
+- 项目、环境、连接引用、实体关系和可插拔 Context Collector。
+- Docker Compose、Kubernetes、systemd、主机指标和注册 HTTP 健康端点适配器。
+- 精确 Action、参数 Schema、角色权限、风险策略和执行前复核。
+- 服务启动、停止、重启和扩缩容需要人工审批，完成后自动读取状态验证。
+- 未注册的删除资源、任意 Shell 等破坏性能力不可通过审批临时放行。
+- Runtime Evidence、Tool Invocation、Model Call、Agent Step 和数据库只追加的链式审计。
+- 项目经验保存 README、部署说明、历史故障和人工经验；它是辅助证据，不是所有问题的必经 RAG。
+- Assistant 回答支持有帮助、不完整、不准确和未解决反馈，不自动修改策略或知识。
+- React 三栏工作台：项目与会话、聊天与审批、活动/经验/配置。
 
-## V1.1 边界
+## 处理流程
 
-- 不执行修改类运维操作，例如重启服务、停止容器、删除资源、修改配置或写入文件。
-- 不做流式输出，聊天回复由后端生成完成后一次性返回。
-- 不提供自动修复、自动部署、复杂审批流或危险操作确认。
-- 不内置 Project Facts 独立表、知识图谱、Neo4j 或反馈闭环；这些属于后续版本规划。
-- 当前经验库兼容复用 `rag_documents` / `rag_chunks` 表和接口，但产品语义是“经验库”，不是主 RAG。
+```text
+用户消息
+  -> 解析当前项目、环境、权限和可用能力
+  -> LLM 输出结构化 Request 与下一步 Decision
+  -> 直接回答 / 查询上下文 / 调用只读工具 / 提出变更
+  -> Capability Schema + Policy Engine
+  -> 只读执行，或为变更生成精确审批
+  -> Runtime Adapter 执行并保存 Evidence
+  -> 变更后验证
+  -> LLM 基于证据自然回答
+```
+
+回答结构会根据问题变化，不固定套用“结论 / 证据 / 下一步建议”。项目事实和实时状态必须有来源；证据不足时会明确说明缺口，不编造端口、目录、服务名或状态。
 
 ## 技术栈
 
-- 后端：FastAPI、SQLAlchemy、Pydantic、psycopg、Paramiko。
+- 后端：FastAPI、SQLAlchemy 2、Pydantic 2、LangGraph、Alembic、Paramiko、OpenAI-compatible SDK。
 - 前端：React、TypeScript、Vite、Lucide Icons、Nginx。
-- 数据库：PostgreSQL 16 + pgvector。
+- 数据库：PostgreSQL 16；当前镜像包含 pgvector，经验检索默认使用可解释的验证状态与文本检索。
 - 部署：Docker Compose。
 
 ## 快速开始
 
-复制环境变量模板：
+1. 创建配置：
 
 ```bash
 cp .env.example .env
 ```
 
-按实际环境修改 `.env`。至少需要关注：
+2. 至少修改以下配置：
 
 ```env
-APP_SECRET_KEY=replace-with-a-long-random-string
-ADMIN_PASSWORD=change-me-before-running
+APP_SECRET_KEY=一段足够长的随机字符串
+ADMIN_PASSWORD=管理员密码
 
-DEEPSEEK_API_KEY=replace-with-your-api-key
+DEEPSEEK_API_KEY=你的模型密钥
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 LLM_PROVIDER=deepseek
-LLM_MODEL=deepseek-v4-pro
+LLM_MODEL=你的实际模型名称
 
-VIDEOHUB_WORKDIR=/home/jcheng/Golang/feedsystem_video_go
-VIDEOHUB_COMPOSE_FILE=docker-compose.yml
-VIDEOHUB_HEALTH_URL=http://127.0.0.1:8080/health
-
+VIDEOHUB_WORKDIR=/home/your-user/project
 VIDEOHUB_SSH_HOST=host.docker.internal
-VIDEOHUB_SSH_PORT=22
 VIDEOHUB_SSH_USERNAME=opsagent
 VIDEOHUB_SSH_KEY_HOST_DIR=./secrets
 VIDEOHUB_SSH_KEY_PATH=/run/secrets/videohub_ssh_key
 ```
 
-如果后端容器需要诊断 WSL 或宿主机中的项目，需要准备 SSH 私钥：
+LLM Provider 使用 OpenAI 兼容接口，当前 `.env` 可以配置 DeepSeek，但代码并不绑定某一个具体模型名称。
 
-```text
-secrets/videohub_ssh_key
+3. 将 SSH 私钥放在 `secrets/videohub_ssh_key`，并确保目标用户的 `authorized_keys` 已安装对应公钥。生产环境建议同时设置主机指纹并启用严格校验：
+
+```env
+VIDEOHUB_SSH_HOST_FINGERPRINT=SHA256:...
+SSH_STRICT_HOST_KEY_CHECKING=true
 ```
 
-并确保目标用户已经把对应公钥加入：
-
-```text
-~/.ssh/authorized_keys
-```
-
-启动服务：
+4. 启动：
 
 ```bash
 docker compose up -d --build
 ```
 
-访问：
+访问地址：
 
 - 前端：http://localhost:5175
-- 后端健康检查：http://localhost:8000/health
+- 健康检查：http://localhost:8000/health
+- OpenAPI：http://localhost:8000/docs
 
-## 常用命令
+后端容器启动时会先执行 `alembic upgrade head`，随后初始化管理员、默认项目、环境、能力版本和经验种子。LangGraph checkpoint 表由 LangGraph 自行维护，Alembic 不删除或接管这些表。
 
-重建前端：
+## 配置重点
 
-```bash
-docker compose up -d --build frontend
-```
+| 变量 | 作用 |
+|---|---|
+| `DATABASE_URL` | PostgreSQL 连接地址 |
+| `APP_SECRET_KEY` | JWT 签名密钥 |
+| `LLM_PROVIDER` / `LLM_MODEL` | 模型审计标识与实际模型 |
+| `LLM_TIMEOUT_SECONDS` | 单次模型请求超时 |
+| `AGENT_MAX_STEPS` | 单个 Run 的最大决策步数 |
+| `AGENT_MAX_TOOL_CALLS` | 单个 Run 的最大工具调用数 |
+| `AGENT_TIMEOUT_SECONDS` | 单个 Run 的总时长上限 |
+| `AGENT_CONTEXT_MAX_CHARS` | 单次模型决策可使用的上下文字符预算 |
+| `VIDEOHUB_DEPLOY_TYPE` | 默认环境运行时，可为 `docker_compose`、`kubernetes`、`systemd` 或 `manual` |
+| `VIDEOHUB_SSH_KEY_PATH` | 容器内私钥引用，不保存私钥内容到数据库 |
+| `SSH_STRICT_HOST_KEY_CHECKING` | 是否强制校验 SSH 主机身份 |
 
-重建后端和前端：
+## API 范围
 
-```bash
-docker compose up -d --build backend frontend
-```
-
-查看服务：
-
-```bash
-docker compose ps
-```
-
-查看后端日志：
-
-```bash
-docker logs --tail 120 ops-agent-backend
-```
-
-验证后端健康：
-
-```bash
-curl http://localhost:8000/health
-```
-
-## 当前 API 概览
-
-认证：
+主要资源包括：
 
 ```text
-POST /api/auth/login
-GET  /api/auth/me
+/api/auth
+/api/projects
+/api/environments
+/api/chat-sessions
+/api/agent-runs
+/api/actions
+/api/approvals
+/api/evidence
+/api/tool-invocations
+/api/experience
+/api/messages/{id}/feedback
+/api/projects/{id}/audit-events
 ```
 
-项目：
+完整请求和响应以运行后的 OpenAPI 页面为准。
 
-```text
-GET    /api/projects
-POST   /api/projects
-GET    /api/projects/{project_id}
-PATCH  /api/projects/{project_id}
-DELETE /api/projects/{project_id}
-GET    /api/projects/{project_id}/server
-```
-
-会话和消息：
-
-```text
-GET    /api/projects/{project_id}/chat-sessions
-POST   /api/projects/{project_id}/chat-sessions
-PATCH  /api/chat-sessions/{session_id}
-DELETE /api/chat-sessions/{session_id}
-GET    /api/chat-sessions/{session_id}/messages
-POST   /api/chat-sessions/{session_id}/messages
-```
-
-命令记录：
-
-```text
-GET /api/projects/{project_id}/command-runs
-GET /api/projects/{project_id}/command-runs?session_id=1
-GET /api/command-runs/{command_run_id}
-```
-
-经验库兼容接口：
-
-```text
-GET    /api/projects/{project_id}/rag-documents
-POST   /api/projects/{project_id}/rag-documents
-POST   /api/projects/{project_id}/rag-search
-POST   /api/rag-documents/{document_id}/reindex
-DELETE /api/rag-documents/{document_id}
-```
-
-## 数据库说明
-
-应用启动时会自动：
-
-- 创建 `vector` 扩展。
-- 根据 SQLAlchemy 模型创建基础表。
-- 初始化管理员、默认服务器、默认项目和经验库种子文档。
-- 为旧库补充 `projects.is_pinned` 和 `chat_sessions.is_pinned` 字段。
-
-项目删除和会话删除当前是软删除：
-
-- 项目删除：`projects.is_active = false`
-- 会话删除：`chat_sessions.status = deleted`
-
-## 本地开发
+## 开发与测试
 
 后端：
 
 ```bash
 cd backend
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+alembic upgrade head
+pytest -q tests
 uvicorn app.main:app --reload
 ```
 
@@ -196,39 +145,37 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
+npm run build
 npm run dev
 ```
-
-生产镜像中的前端由 Nginx 托管静态文件，并把 `/api` 请求反向代理到后端。
 
 ## 目录结构
 
 ```text
-.
-├── backend/                 # FastAPI 后端
-├── frontend/                # React 前端
-├── docs/                    # 架构、配置、部署和经验库种子文档
-├── infra/                   # 基础设施相关配置
-├── secrets/                 # 本地密钥目录，只提交 .gitkeep
-├── docker-compose.yml       # 一键启动配置
-├── .env.example             # 环境变量模板
-└── README.md
+backend/app/
+  agent/          LangGraph 状态、节点与 Run 服务
+  llm/            结构化 Decision Gateway
+  capabilities/   语义能力定义、Schema 与 Registry
+  policy/         权限、风险与 Action hash
+  runtime/        Docker/Kubernetes/systemd/HTTP/SSH 适配器
+  context/        项目实体关系与 Collector
+  experience/     项目经验索引和检索
+  evidence/       工具结果和实时证据
+  approvals/      审批 API 位于 api/approvals.py
+  audit/          链式审计事件
+  api/            FastAPI 资源接口
+  models/         SQLAlchemy 最终数据模型
+backend/alembic/  数据库迁移
+frontend/         React 工作台
+docs/knowledge/   默认项目经验种子
+infra/            本地基础设施配置
 ```
 
-## 不要提交的内容
+## 安全边界
 
-以下内容已由 `.gitignore` 排除，不应提交到 GitHub：
-
-- `.env`、`.env.*` 中的真实配置。
-- `secrets/` 中的真实私钥、公钥和令牌。
-- `frontend/dist/`、`node_modules/`、`.venv/`、缓存、日志和本地数据库文件。
-- 个人设计草稿、截图原稿和未脱敏资料。
-
-## 更多文档
-
-- [项目目录设计](docs/architecture/PROJECT_STRUCTURE.md)
-- [V1 配置说明](docs/config/V1_CONFIGURATION.md)
-- [LLM 配置示例](docs/config/DEEPSEEK_CONFIG.md)
-- [PostgreSQL + pgvector 配置](docs/database/POSTGRES_PGVECTOR_SETUP.md)
-- [Docker 一键运行设计](docs/deployment/DOCKER_ONE_CLICK_DESIGN.md)
-- [VideoHub 经验库种子文档](docs/knowledge/videohub/README.md)
+- `.env`、API key 和 SSH 私钥不得提交到 Git，也不会写入业务表。
+- Agent 只能调用 Registry 中注册的能力，参数必须先通过 Schema。
+- SSH 层只接收由 Adapter 构建的固定 argv，不提供自由 Shell 能力。
+- 审批绑定 Action hash、目标、环境、能力版本和参数；任一变化都会使审批失效。
+- 运行日志和工具输出会脱敏、截断，并作为不可信证据传给模型。
+- 当前未注册资源删除、数据删除、权限绕过和任意命令执行能力。

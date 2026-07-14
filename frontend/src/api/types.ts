@@ -1,68 +1,11 @@
-export type User = {
-  id: number;
-  username: string;
-  email: string;
-  role: string;
-};
-
-export type Project = {
-  id: number;
-  name: string;
-  description?: string;
-  deploy_type: string;
-  workdir: string;
-  compose_file?: string;
-  health_url?: string;
-  server_id: number;
-  allowed_container_prefixes: string[];
-  known_services: string[];
-  settings_json: Record<string, unknown>;
-  is_pinned: boolean;
-};
-
-export type ChatSession = {
-  id: number;
-  project_id: number;
-  user_id: number;
-  title: string;
-  status: string;
-  is_pinned: boolean;
-};
-
-export type ChatMessage = {
-  id: number;
-  session_id: number;
-  project_id: number;
-  role: "user" | "assistant" | "system" | "tool";
-  content: string;
-  message_type: string;
-  metadata_json: Record<string, unknown>;
-};
-
-export type CommandRun = {
-  id: number;
-  command: string;
-  cwd: string;
-  purpose?: string;
-  risk_level: string;
-  status: string;
-  exit_code?: number;
-  stdout_excerpt?: string;
-  stderr_excerpt?: string;
-  duration_ms?: number;
-  created_at?: string;
-  started_at?: string;
-  finished_at?: string;
-  ruleguard_result?: Record<string, unknown>;
-};
-
-export type RagDocument = {
-  id: number;
-  project_id: number;
-  title: string;
-  file_name: string;
-  file_type: string;
-  doc_type: string;
-  status: string;
-  chunk_count: number;
-};
+export type User = { id: number; username: string; email: string; role: string };
+export type Project = { id: number; owner_id: number; name: string; description?: string; settings_json: Record<string, unknown>; is_active: boolean; is_pinned: boolean; created_at?: string };
+export type Environment = { id: number; project_id: number; name: string; runtime_type: string; connection_id?: number; workdir?: string; namespace?: string; config_json: Record<string, unknown>; policy_profile: string; is_default: boolean; is_active: boolean };
+export type ChatSession = { id: number; project_id: number | null; environment_id: number | null; user_id: number; title: string; status: string; is_pinned: boolean; created_at?: string; updated_at?: string };
+export type Approval = { id: string; action_id: string; action_hash: string; decision: string; impact_summary: string; risk_summary: string; expires_at: string; action?: Action };
+export type ChatMessage = { id: number; session_id: number; project_id: number | null; role: "user" | "assistant" | "system" | "tool"; content: string; message_type: string; metadata_json: { run_id?: string; run_status?: string; approvals?: Approval[]; evidence_ids?: string[]; [key: string]: unknown }; created_at?: string };
+export type AgentRun = { id: string; session_id: number; project_id: number | null; environment_id: number | null; status: string; current_step?: string; step_count: number; request_json: Record<string, unknown>; plan_json: Record<string, unknown>; error_code?: string; error_message?: string; created_at?: string; completed_at?: string };
+export type Action = { id: string; run_id: string; capability_name: string; target_json: Record<string, unknown>; arguments_json: Record<string, unknown>; purpose?: string; effect: string; action_hash: string; status: string; precheck?: string; verifier?: string; rollback?: string; created_at?: string };
+export type Evidence = { id: string; capability_name: string; status: string; summary: string; data_json: Record<string, unknown>; observed_at: string; fresh_until?: string };
+export type ExperienceItem = { id: number; project_id: number; title: string; item_type: string; content: string; tags: string[]; source_type: string; trust_status: string; verified_at?: string; updated_at?: string };
+export type Entity = { id: string; type: string; name: string; display_name: string; properties: Record<string, unknown>; source_id?: number; confidence?: number; last_verified_at?: string };

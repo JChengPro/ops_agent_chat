@@ -1,101 +1,32 @@
 import { apiFetch, setToken } from "./client";
-import { getToken } from "./client";
-import type { ChatMessage, ChatSession, CommandRun, Project, RagDocument, User } from "./types";
+import type { Action, AgentRun, Approval, ChatMessage, ChatSession, Entity, Environment, Evidence, ExperienceItem, Project, User } from "./types";
 
-export async function login(username: string, password: string): Promise<User> {
-  const response = await apiFetch<{ access_token: string; user: User }>("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ username, password })
-  });
-  setToken(response.access_token);
-  return response.user;
-}
-
-export function me(): Promise<User> {
-  return apiFetch<User>("/api/auth/me");
-}
-
-export function listProjects(): Promise<Project[]> {
-  return apiFetch<Project[]>("/api/projects");
-}
-
-export function updateProject(projectId: number, payload: { name?: string; is_pinned?: boolean }): Promise<Project> {
-  return apiFetch<Project>(`/api/projects/${projectId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload)
-  });
-}
-
-export function deleteProject(projectId: number): Promise<Project> {
-  return apiFetch<Project>(`/api/projects/${projectId}`, {
-    method: "DELETE"
-  });
-}
-
-export function listSessions(projectId: number): Promise<ChatSession[]> {
-  return apiFetch<ChatSession[]>(`/api/projects/${projectId}/chat-sessions`);
-}
-
-export function createSession(projectId: number, title = "新会话"): Promise<ChatSession> {
-  return apiFetch<ChatSession>(`/api/projects/${projectId}/chat-sessions`, {
-    method: "POST",
-    body: JSON.stringify({ title })
-  });
-}
-
-export function updateSession(sessionId: number, payload: { title?: string; is_pinned?: boolean }): Promise<ChatSession> {
-  return apiFetch<ChatSession>(`/api/chat-sessions/${sessionId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload)
-  });
-}
-
-export function deleteSession(sessionId: number): Promise<ChatSession> {
-  return apiFetch<ChatSession>(`/api/chat-sessions/${sessionId}`, {
-    method: "DELETE"
-  });
-}
-
-export function listMessages(sessionId: number): Promise<ChatMessage[]> {
-  return apiFetch<ChatMessage[]>(`/api/chat-sessions/${sessionId}/messages`);
-}
-
-export function sendMessage(sessionId: number, content: string) {
-  return apiFetch<{
-    assistant_message: ChatMessage;
-    command_runs: CommandRun[];
-    command_plan?: Record<string, unknown>;
-    experience_sources: unknown[];
-    rag_sources: unknown[];
-  }>(`/api/chat-sessions/${sessionId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ content })
-  });
-}
-
-export function listCommandRuns(projectId: number, sessionId?: number): Promise<CommandRun[]> {
-  const suffix = sessionId ? `?session_id=${sessionId}` : "";
-  return apiFetch<CommandRun[]>(`/api/projects/${projectId}/command-runs${suffix}`);
-}
-
-export function listRagDocuments(projectId: number): Promise<RagDocument[]> {
-  return apiFetch<RagDocument[]>(`/api/projects/${projectId}/rag-documents`);
-}
-
-export async function uploadRagDocument(projectId: number, file: File, docType = "normal"): Promise<RagDocument> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("doc_type", docType);
-  const headers = new Headers();
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`/api/projects/${projectId}/rag-documents`, {
-    method: "POST",
-    headers,
-    body: form
-  });
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  return (await response.json()) as RagDocument;
-}
+export async function login(username: string, password: string): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/login", {method:"POST",body:JSON.stringify({username,password})}); setToken(data.access_token); return data.user; }
+export const me = () => apiFetch<User>("/api/auth/me");
+export const listProjects = () => apiFetch<Project[]>("/api/projects");
+export const createProject = (payload:{name:string;description?:string}) => apiFetch<Project>("/api/projects",{method:"POST",body:JSON.stringify(payload)});
+export const updateProject = (id:number,payload:Partial<Project>) => apiFetch<Project>(`/api/projects/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
+export const deleteProject = (id:number) => apiFetch<Project>(`/api/projects/${id}`,{method:"DELETE"});
+export const listEnvironments = (id:number) => apiFetch<Environment[]>(`/api/projects/${id}/environments`);
+export const collectContext = (id:number) => apiFetch<unknown[]>(`/api/environments/${id}/collect-context`,{method:"POST"});
+export const listEntities = (id:number) => apiFetch<Entity[]>(`/api/projects/${id}/entities`);
+export const listSessions = (id:number) => apiFetch<ChatSession[]>(`/api/projects/${id}/chat-sessions`);
+export const listGeneralSessions = () => apiFetch<ChatSession[]>("/api/chat-sessions");
+export const createSession = (id:number|null,title="新会话") => apiFetch<ChatSession>(id===null?"/api/chat-sessions":`/api/projects/${id}/chat-sessions`,{method:"POST",body:JSON.stringify({title})});
+export const updateSession = (id:number,payload:Partial<ChatSession>) => apiFetch<ChatSession>(`/api/chat-sessions/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
+export const deleteSession = (id:number) => apiFetch<ChatSession>(`/api/chat-sessions/${id}`,{method:"DELETE"});
+export const listMessages = (id:number) => apiFetch<ChatMessage[]>(`/api/chat-sessions/${id}/messages`);
+export const sendMessage = (id:number,content:string) => apiFetch<{assistant_message:ChatMessage;run_summary:AgentRun;approvals:Approval[]}>(`/api/chat-sessions/${id}/messages`,{method:"POST",body:JSON.stringify({content})});
+export const queueMessage = (id:number,content:string) => apiFetch<{user_message:ChatMessage;run_summary:AgentRun}>(`/api/chat-sessions/${id}/agent-runs`,{method:"POST",body:JSON.stringify({content})});
+export const executeRun = (id:string) => apiFetch<{assistant_message:ChatMessage;run_summary:AgentRun;approvals:Approval[]}>(`/api/agent-runs/${id}/execute`,{method:"POST"});
+export const cancelRun = (id:string) => apiFetch<AgentRun>(`/api/agent-runs/${id}/cancel`,{method:"POST"});
+export const listRuns = (projectId:number,sessionId?:number) => apiFetch<AgentRun[]>(`/api/projects/${projectId}/agent-runs${sessionId?`?session_id=${sessionId}`:""}`);
+export const listGeneralRuns = (sessionId?:number) => apiFetch<AgentRun[]>(`/api/agent-runs${sessionId?`?session_id=${sessionId}`:""}`);
+export const listActions = (runId:string) => apiFetch<Action[]>(`/api/agent-runs/${runId}/actions`);
+export const listEvidence = (runId:string) => apiFetch<Evidence[]>(`/api/agent-runs/${runId}/evidence`);
+export const decideApproval = (approval:Approval,decision:"approve"|"reject",comment?:string) => apiFetch<{assistant_message?:ChatMessage}>(`/api/approvals/${approval.id}/${decision}`,{method:"POST",body:JSON.stringify({action_hash:approval.action_hash,comment})});
+export const listExperience = (id:number) => apiFetch<ExperienceItem[]>(`/api/projects/${id}/experience`);
+export const createExperience = (id:number,payload:{title:string;content:string;trust_status:string;tags:string[]}) => apiFetch<ExperienceItem>(`/api/projects/${id}/experience`,{method:"POST",body:JSON.stringify(payload)});
+export const updateExperience = (id:number,payload:Partial<ExperienceItem>) => apiFetch<ExperienceItem>(`/api/experience/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
+export const deleteExperience = (id:number) => apiFetch<{deleted:boolean}>(`/api/experience/${id}`,{method:"DELETE"});
+export const sendFeedback = (id:number,rating:string) => apiFetch(`/api/messages/${id}/feedback`,{method:"POST",body:JSON.stringify({rating})});
