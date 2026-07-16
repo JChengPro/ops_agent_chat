@@ -33,6 +33,26 @@ class AuditEvent(Base):
     run_id: Mapped[str | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True, index=True)
     action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True, index=True)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    previous_event_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    previous_event_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     event_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoginThrottle(Base):
+    __tablename__ = "login_throttles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    identity_key: Mapped[str] = mapped_column(String(400), unique=True, index=True)
+    failed_count: Mapped[int] = mapped_column(default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentWorker(Base):
+    __tablename__ = "agent_workers"
+
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    status: Mapped[str] = mapped_column(String(40), default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

@@ -195,7 +195,8 @@
   permission: runtime.change
   approval_mode: always
   executor: registered_deployment
-  precheck: deployment.verify_registered
+  version: final-2
+  precheck: deployment.precheck_registered
   verifier: deployment.verify_registered
   rollback: null
   arguments:
@@ -203,6 +204,17 @@
 
 - name: deployment.verify_registered
   description: Verify the runtime state of a registered deployment recipe.
+  effect: read
+  risk_level: L0
+  runtimes: [docker_compose, kubernetes]
+  permission: runtime.read
+  approval_mode: never
+  executor: registered_deployment
+  arguments:
+    deployment: {type: string, required: true, max_length: 120}
+
+- name: deployment.precheck_registered
+  description: Validate that a registered deployment recipe is complete before approval without changing runtime state.
   effect: read
   risk_level: L0
   runtimes: [docker_compose, kubernetes]

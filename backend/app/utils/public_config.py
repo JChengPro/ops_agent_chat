@@ -6,6 +6,7 @@ SENSITIVE_KEYS = {
     "api_key",
     "content",
     "credential",
+    "credential_ref",
     "password",
     "private_key",
     "secret",

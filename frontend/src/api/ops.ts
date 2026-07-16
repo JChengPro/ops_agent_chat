@@ -1,7 +1,8 @@
 import { apiFetch, setToken } from "./client";
-import type { Action, AgentRun, Approval, ChatMessage, ChatSession, Entity, Environment, Evidence, ExperienceItem, Project, User } from "./types";
+import type { Action, AgentRun, AgentStep, Approval, ApprovalDecisionResponse, ChatMessage, ChatSession, Entity, Environment, Evidence, ExperienceItem, Project, User } from "./types";
 
 export async function login(username: string, password: string): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/login", {method:"POST",body:JSON.stringify({username,password})}); setToken(data.access_token); return data.user; }
+export const logout = () => apiFetch<void>("/api/auth/logout",{method:"POST"});
 export const me = () => apiFetch<User>("/api/auth/me");
 export const listProjects = () => apiFetch<Project[]>("/api/projects");
 export const createProject = (payload:{name:string;description?:string}) => apiFetch<Project>("/api/projects",{method:"POST",body:JSON.stringify(payload)});
@@ -16,15 +17,15 @@ export const createSession = (id:number|null,title="新会话") => apiFetch<Chat
 export const updateSession = (id:number,payload:Partial<ChatSession>) => apiFetch<ChatSession>(`/api/chat-sessions/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
 export const deleteSession = (id:number) => apiFetch<ChatSession>(`/api/chat-sessions/${id}`,{method:"DELETE"});
 export const listMessages = (id:number) => apiFetch<ChatMessage[]>(`/api/chat-sessions/${id}/messages`);
-export const sendMessage = (id:number,content:string) => apiFetch<{assistant_message:ChatMessage;run_summary:AgentRun;approvals:Approval[]}>(`/api/chat-sessions/${id}/messages`,{method:"POST",body:JSON.stringify({content})});
 export const queueMessage = (id:number,content:string) => apiFetch<{user_message:ChatMessage;run_summary:AgentRun}>(`/api/chat-sessions/${id}/agent-runs`,{method:"POST",body:JSON.stringify({content})});
-export const executeRun = (id:string) => apiFetch<{assistant_message:ChatMessage;run_summary:AgentRun;approvals:Approval[]}>(`/api/agent-runs/${id}/execute`,{method:"POST"});
+export const getRun = (id:string) => apiFetch<AgentRun>(`/api/agent-runs/${id}`);
 export const cancelRun = (id:string) => apiFetch<AgentRun>(`/api/agent-runs/${id}/cancel`,{method:"POST"});
 export const listRuns = (projectId:number,sessionId?:number) => apiFetch<AgentRun[]>(`/api/projects/${projectId}/agent-runs${sessionId?`?session_id=${sessionId}`:""}`);
 export const listGeneralRuns = (sessionId?:number) => apiFetch<AgentRun[]>(`/api/agent-runs${sessionId?`?session_id=${sessionId}`:""}`);
 export const listActions = (runId:string) => apiFetch<Action[]>(`/api/agent-runs/${runId}/actions`);
+export const listSteps = (runId:string) => apiFetch<AgentStep[]>(`/api/agent-runs/${runId}/steps`);
 export const listEvidence = (runId:string) => apiFetch<Evidence[]>(`/api/agent-runs/${runId}/evidence`);
-export const decideApproval = (approval:Approval,decision:"approve"|"reject",comment?:string) => apiFetch<{assistant_message?:ChatMessage}>(`/api/approvals/${approval.id}/${decision}`,{method:"POST",body:JSON.stringify({action_hash:approval.action_hash,comment})});
+export const decideApproval = (approval:Approval,decision:"approve"|"reject",comment?:string) => apiFetch<ApprovalDecisionResponse>(`/api/approvals/${approval.id}/${decision}`,{method:"POST",body:JSON.stringify({action_hash:approval.action_hash,comment})});
 export const listExperience = (id:number) => apiFetch<ExperienceItem[]>(`/api/projects/${id}/experience`);
 export const createExperience = (id:number,payload:{title:string;content:string;trust_status:string;tags:string[]}) => apiFetch<ExperienceItem>(`/api/projects/${id}/experience`,{method:"POST",body:JSON.stringify(payload)});
 export const updateExperience = (id:number,payload:Partial<ExperienceItem>) => apiFetch<ExperienceItem>(`/api/experience/${id}`,{method:"PATCH",body:JSON.stringify(payload)});

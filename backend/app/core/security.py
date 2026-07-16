@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import os
+from uuid import uuid4
 from typing import Any
 
 import jwt
@@ -49,6 +50,7 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
         "sub": subject,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.jwt_expire_minutes)).timestamp()),
+        "jti": str(uuid4()),
     }
     if extra:
         payload.update(extra)
@@ -75,4 +77,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.get(User, int(user_id))
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or missing user")
+    if int(payload.get("ver", -1)) != user.token_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
     return user

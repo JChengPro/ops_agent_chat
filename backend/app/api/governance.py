@@ -10,6 +10,7 @@ from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.governance import AuditEvent, MessageFeedback
 from app.models.user import User
+from app.audit.service import verify_audit_chain
 
 router = APIRouter(tags=["governance"])
 
@@ -42,3 +43,9 @@ def project_feedback(project_id: int, db: Session = Depends(get_db), user: User 
 def audit(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     require_project(db, user, project_id); return db.scalars(select(AuditEvent).where(AuditEvent.project_id == project_id).order_by(AuditEvent.created_at.desc()).limit(500)).all()
 
+
+@router.get("/audit-events/verify")
+def verify_audit(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if user.role != "admin":
+        raise HTTPException(403, "Administrator permission is required")
+    return verify_audit_chain(db)

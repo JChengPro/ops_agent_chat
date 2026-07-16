@@ -1,4 +1,5 @@
 from typing import Any
+from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -27,8 +28,15 @@ class ConnectionPayload(BaseModel):
     @field_validator("credential_ref")
     @classmethod
     def validate_credential_ref(cls, value: str | None) -> str | None:
-        if value is not None and (not value.startswith("/run/secrets/") or "/../" in value or value.endswith("/")):
-            raise ValueError("credential_ref must reference a file below /run/secrets")
+        if value is not None:
+            path = PurePosixPath(value)
+            if (
+                not value.startswith("/run/secrets/")
+                or ".." in path.parts
+                or value.endswith("/")
+                or any("\x00" in part or "\n" in part for part in path.parts)
+            ):
+                raise ValueError("credential_ref must reference a file below /run/secrets")
         return value
 
 

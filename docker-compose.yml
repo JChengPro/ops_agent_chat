@@ -24,8 +24,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://opsagent:opsagent_password@postgres:5432/ops_agent_chat
-      VIDEOHUB_SSH_HOST: host.docker.internal
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://opsagent:opsagent_password@postgres:5432/ops_agent_chat}
+      VIDEOHUB_SSH_HOST: ${VIDEOHUB_SSH_HOST:-host.docker.internal}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -37,7 +37,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/live >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -52,6 +52,24 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+  worker:
+    build: ./backend
+    container_name: ops-agent-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://opsagent:opsagent_password@postgres:5432/ops_agent_chat}
+      VIDEOHUB_SSH_HOST: ${VIDEOHUB_SSH_HOST:-host.docker.internal}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./docs:/app/docs:ro
+      - ${VIDEOHUB_SSH_KEY_HOST_DIR:-./secrets}:/run/secrets:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["python", "-m", "app.worker"]
 
 volumes:
   ops_agent_postgres_data:

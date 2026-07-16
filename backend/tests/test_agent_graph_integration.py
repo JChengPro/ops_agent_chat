@@ -4,7 +4,8 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from sqlalchemy import select
 
 from app.agent.graph import OpsAgentGraph
-from app.agent.service import resume_run, start_run
+from app.agent.service import _persist_claims, claim_run, create_run, process_claimed_run
+from app.api.approvals import ApprovalDecision, decide as decide_approval
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.llm.gateway import LLMGateway
@@ -27,11 +28,22 @@ def req(goal="answer", scope="general", effect="none", time="timeless"):
 
 
 class FakeExecutor:
+    def __init__(self):
+        self.calls = 0
+
     def execute(self, db, action, capability):
+        self.calls += 1
         data = {"stdout": '{"State":"running"}\n'} if capability.name == "service.status" else {"state": "running"}
         evidence = record_result(db, action, "fake", AdapterResult("success", f"Observed {capability.name}", data))
         db.flush()
         return {"evidence_id": evidence.id, "capability": capability.name, "status": "success", "summary": evidence.summary, "data": evidence.data_json, "observed_at": evidence.observed_at.isoformat(), "fresh_until": evidence.fresh_until.isoformat() if evidence.fresh_until else None}
+
+    def rollback(self, db, action, capability):
+        del db, action, capability
+        return {"status": "success", "summary": "rolled back"}
+
+    def finalize(self, db, action, capability):
+        del db, action, capability
 
 
 def setup_subject():
@@ -54,28 +66,102 @@ def test_direct_answer_and_read_investigation_and_approval_resume():
     ]
     with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
         saver.setup()
-        graph = OpsAgentGraph(checkpointer=saver, gateway=LLMGateway(FakeDecisionProvider(decisions)), executor=FakeExecutor())
+        executor = FakeExecutor()
+        graph = OpsAgentGraph(checkpointer=saver, gateway=LLMGateway(FakeDecisionProvider(decisions)), executor=executor)
         with SessionLocal() as db:
             session = db.get(ChatSession, session_id)
-            direct = start_run(db, graph, session, user_id, "删除容器通常有什么后果？")
+            queued = create_run(db, session, user_id, "删除容器通常有什么后果？")
+            direct = process_claimed_run(db, graph, claim_run(db, "test-worker", queued["run_summary"]["id"]), "test-worker")
             assert direct["run_summary"]["status"] == "completed"
-            read = start_run(db, graph, session, user_id, "Redis 现在怎么样？")
+            direct_claim = db.scalar(select(EvidenceClaim).where(EvidenceClaim.message_id == direct["assistant_message"]["id"]))
+            assert direct_claim.claim_type == "general_knowledge"
+            assert direct_claim.confidence <= 0.7
+            queued = create_run(db, session, user_id, "Redis 现在怎么样？")
+            read = process_claimed_run(db, graph, claim_run(db, "test-worker", queued["run_summary"]["id"]), "test-worker")
             assert read["assistant_message"]["content"] == "Redis 当前正在运行。"
             assert read["assistant_message"]["metadata_json"]["evidence_ids"]
             claim = db.scalar(select(EvidenceClaim).where(EvidenceClaim.message_id == read["assistant_message"]["id"]))
-            assert db.scalar(select(EvidenceClaimLink.id).where(EvidenceClaimLink.claim_id == claim.id)) is not None
-            change = start_run(db, graph, session, user_id, "重启 Redis")
+            assert claim.claim_type == "inference"
+            assert db.scalar(select(EvidenceClaimLink.id).where(EvidenceClaimLink.claim_id == claim.id)) is None
+            evidence_id = read["assistant_message"]["metadata_json"]["evidence_ids"][0]
+            _persist_claims(db, read["assistant_message"]["id"], read["assistant_message"]["content"], [
+                {"text": "Redis 当前正在运行。", "claim_type": "fact", "evidence_ids": [evidence_id], "confidence": 0.9},
+                {"text": "建议继续观察。", "claim_type": "recommendation", "evidence_ids": [], "confidence": 0.7},
+            ], [evidence_id])
+            db.commit()
+            claims = list(db.scalars(select(EvidenceClaim).where(EvidenceClaim.message_id == read["assistant_message"]["id"])))
+            assert len(claims) == 2
+            assert len(list(db.scalars(select(EvidenceClaimLink.id).where(EvidenceClaimLink.claim_id.in_([item.id for item in claims]))))) == 1
+            queued = create_run(db, session, user_id, "重启 Redis")
+            change = process_claimed_run(db, graph, claim_run(db, "test-worker", queued["run_summary"]["id"]), "test-worker")
             assert change["run_summary"]["status"] == "waiting_for_approval"
             approval = db.scalar(select(Approval).join(Action).where(Action.run_id == change["run_summary"]["id"]))
             assert approval and approval.decision == "pending"
             prepared = list(db.scalars(select(Action).where(Action.run_id == change["run_summary"]["id"])))
             assert {(item.capability_name, item.status) for item in prepared} == {("service.restart", "waiting_for_approval"), ("service.status", "succeeded")}
-            approval.decision = "approved"; approval.decided_at = datetime.now(timezone.utc); db.get(Action, approval.action_id).status = "approved"; db.commit()
+            owner = db.get(User, user_id)
+            decide_approval(approval.id, ApprovalDecision(action_hash=approval.action_hash), "approved", db, owner)
             run = db.get(AgentRun, change["run_summary"]["id"])
-            finished = resume_run(db, graph, run)
+            assert run.status == "queued" and run.current_step == "queued_resume"
+            finished = process_claimed_run(db, graph, claim_run(db, "test-worker", run.id), "test-worker")
             assert finished["assistant_message"]["content"] == "Redis 已重启并完成验证。"
             status_actions = list(db.scalars(select(Action).where(Action.run_id == run.id, Action.capability_name == "service.status")))
             assert len(status_actions) == 3  # initial precheck, post-approval recheck, verifier
+            change_action = db.scalar(select(Action).where(Action.run_id == run.id, Action.capability_name == "service.restart"))
+            assert change_action.status == "verified"
+            calls_before_retry = executor.calls
+            graph.execute({"run_id": run.id, "user_id": user_id, "action_ids": [change_action.id], "evidence": [], "tool_call_count": 0, "step_count": 0})
+            assert executor.calls == calls_before_retry
+
+
+def test_failed_post_change_verification_triggers_automatic_rollback():
+    user_id, session_id = setup_subject()
+    decisions = [
+        {"decision":"propose_change","request":req("change","runtime","change","current"),"tool_calls":[{"capability":"service.restart","arguments":{"service":"redis"},"purpose":"restart"}],"answer":None,"clarification_question":None},
+        {"decision":"respond","request":req("change","runtime","change","current"),"tool_calls":[],"answer":"变更后的状态检查未通过，系统已执行恢复步骤。","clarification_question":None},
+    ]
+
+    class VerificationFailureExecutor(FakeExecutor):
+        def __init__(self):
+            super().__init__()
+            self.status_calls = 0
+            self.rollback_calls = 0
+
+        def execute(self, db, action, capability):
+            self.calls += 1
+            if capability.name == "service.status":
+                self.status_calls += 1
+                result = AdapterResult(
+                    "failed" if self.status_calls == 3 else "success",
+                    "Post-change status failed" if self.status_calls == 3 else "Service is running",
+                    {"stdout": "" if self.status_calls == 3 else '{"State":"running"}\n'},
+                )
+            else:
+                result = AdapterResult("success", "Restart command accepted", {"state": "changed"})
+            evidence = record_result(db, action, "fake", result)
+            db.flush()
+            return {"evidence_id": evidence.id, "capability": capability.name, "status": result.status, "summary": result.summary, "data": evidence.data_json, "observed_at": evidence.observed_at.isoformat(), "fresh_until": evidence.fresh_until.isoformat() if evidence.fresh_until else None}
+
+        def rollback(self, db, action, capability):
+            del db, action, capability
+            self.rollback_calls += 1
+            return {"status": "success", "summary": "Original service state restored"}
+
+    executor = VerificationFailureExecutor()
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        graph = OpsAgentGraph(checkpointer=saver, gateway=LLMGateway(FakeDecisionProvider(decisions)), executor=executor)
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "重启 Redis")
+            waiting = process_claimed_run(db, graph, claim_run(db, "rollback-worker", queued["run_summary"]["id"]), "rollback-worker")
+            approval = db.scalar(select(Approval).join(Action).where(Action.run_id == waiting["run_summary"]["id"]))
+            decide_approval(approval.id, ApprovalDecision(action_hash=approval.action_hash), "approved", db, db.get(User, user_id))
+            finished = process_claimed_run(db, graph, claim_run(db, "rollback-worker", waiting["run_summary"]["id"]), "rollback-worker")
+            action = db.scalar(select(Action).where(Action.run_id == waiting["run_summary"]["id"], Action.capability_name == "service.restart"))
+            assert finished["run_summary"]["status"] == "completed"
+            assert action.status == "rolled_back"
+            assert executor.rollback_calls == 1
 
 
 def test_project_relationship_recursive_query_and_source_conflict():

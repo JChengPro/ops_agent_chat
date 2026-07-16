@@ -36,7 +36,7 @@ class EvidenceClaim(Base):
     message_id: Mapped[int] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True)
     claim_text: Mapped[str] = mapped_column(Text)
     claim_type: Mapped[str] = mapped_column(String(40))
-    confidence: Mapped[float] = mapped_column(default=1.0)
+    confidence: Mapped[float] = mapped_column(default=0.5)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

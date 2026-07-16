@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,9 +41,27 @@ class Settings(BaseSettings):
     videohub_ssh_username: str = "opsagent"
     videohub_ssh_key_path: str = ""
     videohub_ssh_host_fingerprint: str = ""
-    ssh_strict_host_key_checking: bool = Field(default=False, alias="SSH_STRICT_HOST_KEY_CHECKING")
+    ssh_strict_host_key_checking: bool = Field(default=True, alias="SSH_STRICT_HOST_KEY_CHECKING")
 
     knowledge_root: Path = Path("docs/knowledge")
+
+    @model_validator(mode="after")
+    def validate_production_security(self):
+        if self.app_env.lower() in {"prod", "production"}:
+            problems = []
+            if self.app_secret_key in {"change-me", "replace-with-a-long-random-string"} or len(self.app_secret_key) < 32:
+                problems.append("APP_SECRET_KEY must be a non-default value of at least 32 characters")
+            if self.admin_password == "change-me-before-running":
+                problems.append("ADMIN_PASSWORD must not use the development default")
+            if "opsagent_password" in self.database_url:
+                problems.append("DATABASE_URL must not use the development password")
+            if not self.ssh_strict_host_key_checking:
+                problems.append("SSH_STRICT_HOST_KEY_CHECKING must be enabled")
+            if self.llm_provider == "deepseek" and not self.deepseek_api_key:
+                problems.append("DEEPSEEK_API_KEY must be configured")
+            if problems:
+                raise ValueError("Unsafe production configuration: " + "; ".join(problems))
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -16,8 +16,8 @@ class AgentState(TypedDict, total=False):
     action_ids: list[str]
     evidence: list[dict[str, Any]]
     answer: str
+    claims: list[dict[str, Any]]
     status: str
     tool_call_count: int
     step_count: int
     error: str
-

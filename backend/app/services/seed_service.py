@@ -38,6 +38,8 @@ def seed_initial_data(db: Session) -> None:
         )
         db.add(connection)
         db.flush()
+    elif settings.videohub_ssh_host_fingerprint:
+        connection.host_fingerprint = settings.videohub_ssh_host_fingerprint
     project = db.scalar(select(Project).where(Project.owner_id == user.id, Project.name == settings.videohub_project_name))
     if not project:
         project = Project(owner_id=user.id, name=settings.videohub_project_name, description="VideoHub operations project", settings_json={})

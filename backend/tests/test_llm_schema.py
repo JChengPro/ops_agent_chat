@@ -44,3 +44,30 @@ def test_structured_change_mode_is_normalized_without_keywords():
     normalized = _normalize_decision_payload(payload)
     assert normalized["decision"] == "propose_change"
     assert AgentDecision.model_validate(normalized).request.requested_effect == "change"
+
+
+def test_empty_tool_decision_preserves_model_clarification():
+    payload = {
+        "decision": "propose_change",
+        "request": request(requested_effect="change"),
+        "tool_calls": [],
+        "answer": None,
+        "clarification_question": "Do you want to restart every service?",
+    }
+    normalized = _normalize_decision_payload(payload)
+    decision = AgentDecision.model_validate(normalized)
+    assert decision.decision == "clarify"
+    assert decision.clarification_question == "Do you want to restart every service?"
+
+
+def test_empty_tool_decision_has_safe_clarification_fallback():
+    payload = {
+        "decision": "propose_change",
+        "request": request(requested_effect="change"),
+        "tool_calls": [],
+        "answer": None,
+        "clarification_question": None,
+    }
+    decision = AgentDecision.model_validate(_normalize_decision_payload(payload))
+    assert decision.decision == "clarify"
+    assert "具体操作目标" in decision.clarification_question

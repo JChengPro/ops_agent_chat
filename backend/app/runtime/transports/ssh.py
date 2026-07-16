@@ -3,7 +3,11 @@ import base64
 import hashlib
 from pathlib import PurePosixPath
 import shlex
+import posixpath
+import stat
 import time
+from typing import Callable
+from uuid import uuid4
 
 import paramiko
 
@@ -41,6 +45,7 @@ class SSHTransport:
         argv: list[str],
         *,
         timeout_seconds: int = 20,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> TransportResult:
         if not argv or any("\x00" in item or "\n" in item for item in argv):
             return TransportResult("failed", None, "", "Invalid command arguments", 0)
@@ -60,6 +65,9 @@ class SSHTransport:
             err_buffer = bytearray()
             out_stream_truncated = err_stream_truncated = False
             while True:
+                if cancel_check and cancel_check():
+                    channel.close()
+                    return TransportResult("cancelled", None, "", "Command cancelled", int((time.monotonic() - start) * 1000))
                 while channel.recv_ready():
                     chunk = channel.recv(32768)
                     remaining = 65537 - len(out_buffer)
@@ -110,6 +118,7 @@ class SSHTransport:
             client.connect(**self._connect_kwargs(connection))
             self._verify_fingerprint(client, connection)
             with client.open_sftp() as sftp:
+                target = self._safe_remote_target(sftp, environment.workdir, relative_path, allow_missing_leaf=False)
                 with sftp.open(target, "r") as handle:
                     raw = handle.read(2_000_001)
             if len(raw) > 2_000_000:
@@ -118,23 +127,97 @@ class SSHTransport:
         finally:
             client.close()
 
-    def write_registered_file(self, connection: Connection, environment: Environment, relative_path: str, content: str) -> TransportResult:
+    def write_registered_file(self, connection: Connection, environment: Environment, relative_path: str, content: str, *, backup_path: str | None = None) -> TransportResult:
         if not environment.workdir or len(content.encode("utf-8")) > 2_000_000:
             return TransportResult("failed", None, "", "Invalid workdir or registered content exceeds 2 MB", 0)
         relative = PurePosixPath(relative_path)
         if relative.is_absolute() or ".." in relative.parts:
             return TransportResult("failed", None, "", "File path must stay inside the environment workdir", 0)
-        target = str(PurePosixPath(environment.workdir) / relative)
-        temporary = target + ".ops-agent.tmp"
         client = self._client(connection); start = time.monotonic()
         try:
             client.connect(**self._connect_kwargs(connection)); self._verify_fingerprint(client, connection)
             with client.open_sftp() as sftp:
-                with sftp.open(temporary, "w") as handle: handle.write(content)
-                sftp.posix_rename(temporary, target)
-            return TransportResult("success", 0, "registered file updated", "", int((time.monotonic() - start) * 1000))
+                target = self._safe_remote_target(sftp, environment.workdir, relative_path, allow_missing_leaf=True)
+                temporary = f"{target}.ops-agent.{uuid4().hex}.tmp"
+                backup = self._safe_remote_target(sftp, environment.workdir, backup_path, allow_missing_leaf=True) if backup_path else None
+                target_existed = True
+                try:
+                    sftp.lstat(target)
+                except OSError as exc:
+                    if getattr(exc, "errno", None) == 2:
+                        target_existed = False
+                    else:
+                        raise
+                backup_moved = False
+                try:
+                    if backup and target_existed:
+                        sftp.posix_rename(target, backup)
+                        backup_moved = True
+                    with sftp.open(temporary, "w") as handle:
+                        handle.write(content)
+                    sftp.posix_rename(temporary, target)
+                except Exception as write_error:
+                    cleanup_error = None
+                    try:
+                        sftp.remove(temporary)
+                    except OSError as cleanup_exc:
+                        if getattr(cleanup_exc, "errno", None) != 2:
+                            cleanup_error = cleanup_exc
+                    if backup_moved:
+                        try:
+                            sftp.remove(target)
+                        except OSError as cleanup_exc:
+                            if getattr(cleanup_exc, "errno", None) != 2:
+                                cleanup_error = cleanup_error or cleanup_exc
+                        try:
+                            sftp.posix_rename(backup, target)
+                        except Exception as restore_error:
+                            raise RuntimeError(f"Registered file write failed and original restore also failed: {restore_error}") from write_error
+                    if cleanup_error:
+                        raise RuntimeError(f"Registered file write failed and temporary cleanup failed: {cleanup_error}") from write_error
+                    raise write_error
+            return TransportResult("success", 0, backup_path or "", "", int((time.monotonic() - start) * 1000))
         except Exception as exc:  # noqa: BLE001
             return TransportResult("failed", None, "", f"Registered file update failed: {exc}", int((time.monotonic() - start) * 1000))
+        finally:
+            client.close()
+
+    def restore_registered_file(self, connection: Connection, environment: Environment, relative_path: str, backup_path: str) -> TransportResult:
+        client = self._client(connection); start = time.monotonic()
+        try:
+            client.connect(**self._connect_kwargs(connection)); self._verify_fingerprint(client, connection)
+            with client.open_sftp() as sftp:
+                target = self._safe_remote_target(sftp, environment.workdir, relative_path, allow_missing_leaf=True)
+                backup = self._safe_remote_target(sftp, environment.workdir, backup_path, allow_missing_leaf=True)
+                try:
+                    sftp.lstat(backup)
+                except OSError as exc:
+                    if getattr(exc, "errno", None) != 2:
+                        raise
+                    try:
+                        sftp.remove(target)
+                    except OSError as remove_exc:
+                        if getattr(remove_exc, "errno", None) != 2:
+                            raise
+                else:
+                    sftp.posix_rename(backup, target)
+            return TransportResult("success", 0, "registered file restored", "", int((time.monotonic() - start) * 1000))
+        except Exception as exc:  # noqa: BLE001
+            return TransportResult("failed", None, "", f"Registered file rollback failed: {exc}", int((time.monotonic() - start) * 1000))
+        finally:
+            client.close()
+
+    def remove_registered_backup(self, connection: Connection, environment: Environment, backup_path: str) -> None:
+        client = self._client(connection)
+        try:
+            client.connect(**self._connect_kwargs(connection)); self._verify_fingerprint(client, connection)
+            with client.open_sftp() as sftp:
+                backup = self._safe_remote_target(sftp, environment.workdir, backup_path, allow_missing_leaf=True)
+                try:
+                    sftp.remove(backup)
+                except OSError as exc:
+                    if getattr(exc, "errno", None) != 2:
+                        raise
         finally:
             client.close()
 
@@ -143,7 +226,10 @@ class SSHTransport:
         client = paramiko.SSHClient()
         client.load_system_host_keys()
         strict = get_settings().ssh_strict_host_key_checking
-        client.set_missing_host_key_policy(paramiko.RejectPolicy() if strict else paramiko.AutoAddPolicy())
+        if strict and connection.host_fingerprint:
+            client.set_missing_host_key_policy(FingerprintPolicy(connection.host_fingerprint))
+        else:
+            client.set_missing_host_key_policy(paramiko.RejectPolicy() if strict else paramiko.AutoAddPolicy())
         return client
 
     def _connect_kwargs(self, connection: Connection) -> dict:
@@ -174,3 +260,34 @@ class SSHTransport:
         actual = "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
         if actual != expected:
             raise ValueError(f"SSH host fingerprint mismatch: expected {expected}, got {actual}")
+
+    @staticmethod
+    def _safe_remote_target(sftp, workdir: str, relative_path: str, *, allow_missing_leaf: bool) -> str:
+        root = sftp.normalize(workdir).rstrip("/") or "/"
+        target = posixpath.normpath(posixpath.join(root, relative_path))
+        if posixpath.commonpath([root, target]) != root:
+            raise ValueError("File path escapes the environment workdir")
+        current = root
+        parts = PurePosixPath(posixpath.relpath(target, root)).parts
+        for index, part in enumerate(parts):
+            current = posixpath.join(current, part)
+            try:
+                attributes = sftp.lstat(current)
+            except OSError as exc:
+                if allow_missing_leaf and index == len(parts) - 1 and getattr(exc, "errno", None) == 2:
+                    break
+                raise
+            if stat.S_ISLNK(attributes.st_mode):
+                raise ValueError(f"Symbolic links are not allowed for managed files: {current}")
+        return target
+
+
+class FingerprintPolicy(paramiko.MissingHostKeyPolicy):
+    def __init__(self, expected: str) -> None:
+        self.expected = expected.strip()
+
+    def missing_host_key(self, client, hostname, key) -> None:
+        del client
+        actual = "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+        if actual != self.expected:
+            raise paramiko.SSHException(f"SSH host fingerprint mismatch for {hostname}")

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, JSON, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -53,7 +53,10 @@ class Connection(Base):
 
 class Environment(Base):
     __tablename__ = "environments"
-    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_project_environment_name"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_project_environment_name"),
+        Index("uq_project_active_default_environment", "project_id", unique=True, postgresql_where=text("is_default = true AND is_active = true")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from app.models.project import Connection, Environment
 from app.runtime.transports.ssh import SSHTransport, TransportResult
@@ -20,11 +20,12 @@ class AdapterResult:
 class CommandAdapter:
     executor_type = "ssh"
 
-    def __init__(self, transport: SSHTransport | None = None) -> None:
+    def __init__(self, transport: SSHTransport | None = None, cancel_check: Callable[[], bool] | None = None) -> None:
         self.transport = transport or SSHTransport()
+        self.cancel_check = cancel_check
 
     def run(self, connection: Connection, environment: Environment, argv: list[str], summary: str) -> AdapterResult:
-        result: TransportResult = self.transport.execute(connection, environment, argv)
+        result: TransportResult = self.transport.execute(connection, environment, argv, cancel_check=self.cancel_check)
         return AdapterResult(
             status=result.status,
             summary=summary if result.status == "success" else f"{summary} failed",

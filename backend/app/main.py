@@ -1,36 +1,38 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres import PostgresSaver
 
-from app.agent.graph import OpsAgentGraph
 from app.api import agent_runs, approvals, auth, chat, connections, context_experience, governance, projects
 from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.core.database import get_db
+from app.version import APP_VERSION
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 from app.services.seed_service import seed_initial_data
+from app.models.governance import AgentWorker
+from sqlalchemy import select
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    checkpointer_context = PostgresSaver.from_conn_string(settings.checkpoint_database_url)
-    checkpointer = checkpointer_context.__enter__()
-    try:
+    with PostgresSaver.from_conn_string(settings.checkpoint_database_url) as checkpointer:
         checkpointer.setup()
-        with SessionLocal() as db:
-            seed_initial_data(db)
-        app.state.ops_agent = OpsAgentGraph(checkpointer=checkpointer)
-        yield
-    finally:
-        checkpointer_context.__exit__(None, None, None)
+    with SessionLocal() as db:
+        seed_initial_data(db)
+    app.state.agent_ready = True
+    yield
 
 
 settings = get_settings()
-app = FastAPI(title="Ops Agent Chat", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Ops Agent Chat", version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -55,6 +57,35 @@ async def validation_error(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_ERROR", "message": "Request validation failed", "details": details}})
 
 
+@app.get("/live")
+def live() -> dict:
+    return {"status": "ok", "service": "ops-agent-chat-backend", "version": APP_VERSION}
+
+
+@app.get("/ready")
+def ready(request: Request, db: Session = Depends(get_db)) -> dict:
+    try:
+        db.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1 FROM checkpoints LIMIT 1"))
+        agent_ready = bool(getattr(request.app.state, "agent_ready", False))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail="Database is not ready") from exc
+    if not agent_ready:
+        raise HTTPException(status_code=503, detail="Agent graph is not ready")
+    if settings.llm_provider == "deepseek" and not settings.deepseek_api_key:
+        raise HTTPException(status_code=503, detail="LLM provider is not configured")
+    worker_cutoff = datetime.now(timezone.utc) - timedelta(seconds=15)
+    worker_ready = db.scalar(select(AgentWorker.id).where(AgentWorker.status == "running", AgentWorker.last_seen_at >= worker_cutoff).limit(1))
+    if not worker_ready:
+        raise HTTPException(status_code=503, detail="Agent worker is not ready")
+    return {
+        "status": "ok",
+        "service": "ops-agent-chat-backend",
+        "version": APP_VERSION,
+        "checks": {"database": "ok", "checkpointer": "ok", "agent": "ok", "model": "configured", "worker": "ok"},
+    }
+
+
 @app.get("/health")
-def health() -> dict:
-    return {"status": "ok", "service": "ops-agent-chat-backend", "version": "final"}
+def health(request: Request, db: Session = Depends(get_db)) -> dict:
+    return ready(request, db)

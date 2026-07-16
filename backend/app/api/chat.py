@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent.service import create_run, message_out, start_run
+from app.agent.service import create_run, message_out
 from app.api.deps import require_project
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -83,7 +83,7 @@ def messages(session_id: int, db: Session = Depends(get_db), user: User = Depend
 
 
 @router.post("/chat-sessions/{session_id}/messages")
-def send_message(session_id: int, payload: MessageCreate, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def send_message(session_id: int, payload: MessageCreate, response: Response, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     session = db.get(ChatSession, session_id)
     if not session or session.user_id != user.id or session.status == "deleted": raise HTTPException(404, "Chat session not found")
     if session.project_id:
@@ -91,11 +91,12 @@ def send_message(session_id: int, payload: MessageCreate, request: Request, db: 
         environment = db.get(Environment, session.environment_id) if session.environment_id else None
         if not environment or not environment.is_active or environment.project_id != session.project_id:
             raise HTTPException(409, "The chat environment is no longer active")
-    return start_run(db, request.app.state.ops_agent, session, user.id, payload.content)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return create_run(db, session, user.id, payload.content)
 
 
 @router.post("/chat-sessions/{session_id}/agent-runs")
-def queue_message(session_id: int, payload: MessageCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def queue_message(session_id: int, payload: MessageCreate, response: Response, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     session = db.get(ChatSession, session_id)
     if not session or session.user_id != user.id or session.status == "deleted":
         raise HTTPException(404, "Chat session not found")
@@ -104,4 +105,5 @@ def queue_message(session_id: int, payload: MessageCreate, db: Session = Depends
         environment = db.get(Environment, session.environment_id) if session.environment_id else None
         if not environment or not environment.is_active or environment.project_id != session.project_id:
             raise HTTPException(409, "The chat environment is no longer active")
+    response.status_code = status.HTTP_202_ACCEPTED
     return create_run(db, session, user.id, payload.content)

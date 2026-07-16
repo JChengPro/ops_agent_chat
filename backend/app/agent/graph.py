@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.agent.state import AgentState
 from app.audit.service import append_audit_event
@@ -15,10 +15,91 @@ from app.core.database import SessionLocal
 from app.llm.gateway import LLMGateway
 from app.models.action import Action, Approval, PolicyDecision
 from app.models.agent import AgentRun, AgentStep
-from app.models.project import Environment, Project, ProjectMember
+from app.models.project import Connection, Environment, Project, ProjectMember
 from app.policy.action_hash import compute_action_hash
 from app.policy.engine import PolicyEngine, permissions_for_role
 from app.runtime.executor import RuntimeExecutor
+
+
+def approval_summaries(capability_name: str, target: dict[str, Any], rollback: dict[str, Any] | None) -> tuple[str, str]:
+    name = str(target.get("name") or "当前目标")
+    verbs = {
+        "service.restart": "重启服务",
+        "service.start": "启动服务",
+        "service.stop": "停止服务",
+        "service.scale": "调整服务副本",
+        "config.update_registered": "修改已登记配置",
+        "deployment.apply_registered": "执行已登记部署",
+    }
+    verb = verbs.get(capability_name, "执行变更")
+    impact = f"Agent 准备{verb} {name}。批准后会执行这次变更，并在执行后再次检查目标状态。"
+    if capability_name == "service.restart":
+        risk = f"重启期间 {name} 可能短暂不可用，正在处理的请求可能中断。"
+    elif capability_name == "service.stop":
+        risk = f"停止后 {name} 将不可用，依赖它的功能可能受到影响。"
+    elif capability_name == "service.start":
+        risk = f"启动 {name} 会改变当前运行状态，如果配置或依赖异常，服务可能启动失败。"
+    elif capability_name == "service.scale":
+        risk = f"调整 {name} 的副本数会改变承载能力，副本过少可能影响可用性，副本过多可能增加资源占用。"
+    else:
+        risk = f"{verb}会改变当前环境状态，可能影响相关服务的稳定性。"
+    rollback_kind = str((rollback or {}).get("kind") or "")
+    if rollback_kind == "capability":
+        rollback_text = {
+            "service.start": "重新启动服务",
+            "service.stop": "停止本次启动的服务",
+            "service.scale": "恢复原有副本数量",
+        }.get(str(rollback.get("capability")), "执行预设恢复动作")
+        risk += f" 如果执行后的状态检查未通过，系统会尝试{rollback_text}。"
+    elif rollback_kind == "config_backup":
+        risk += " 如果新配置校验未通过，系统会尝试恢复变更前的配置文件。"
+    elif rollback_kind == "deployment":
+        risk += " 如果部署后的状态检查未通过，系统会按已登记的部署恢复方案处理。"
+    elif rollback_kind == "no_op":
+        risk += " 目标在执行前已经处于所需状态，因此异常时无需反向改变原状态。"
+    else:
+        risk += " 当前没有可自动执行的恢复步骤；异常时系统会停止后续动作并保留诊断证据。"
+    return impact, risk
+
+
+def resolve_action_spec(environment: Environment, definition, arguments: dict[str, Any], operation_id: str, connection: Connection | None = None) -> dict[str, Any]:
+    config = environment.config_json or {}
+    resolved: dict[str, Any] = {
+        "runtime_type": environment.runtime_type,
+        "workdir": environment.workdir,
+        "namespace": environment.namespace,
+        "connection_id": environment.connection_id,
+        "compose_file": str(config.get("compose_file") or "docker-compose.yml"),
+        "operation_id": operation_id,
+    }
+    if connection:
+        resolved["connection"] = {
+            "id": connection.id,
+            "connection_type": connection.connection_type,
+            "host": connection.host,
+            "port": connection.port,
+            "username": connection.username,
+            "credential_ref": connection.credential_ref,
+            "host_fingerprint": connection.host_fingerprint,
+        }
+    if definition.executor == "registered_deployment":
+        key = arguments.get("deployment")
+        spec = (config.get("registered_deployments") or {}).get(key)
+        if not isinstance(spec, dict):
+            raise ValueError(f"Deployment recipe is not registered: {key}")
+        if definition.name == "deployment.apply_registered" and environment.runtime_type == "docker_compose" and spec.get("rollback") not in {"stop", "restart"}:
+            raise ValueError("Docker registered deployments require rollback=stop or rollback=restart")
+        resolved["registered_deployment"] = json.loads(json.dumps(spec))
+    elif definition.executor == "registered_config":
+        key = arguments.get("change")
+        spec = (config.get("registered_config_changes") or {}).get(key)
+        if not isinstance(spec, dict):
+            raise ValueError(f"Configuration change is not registered: {key}")
+        if not spec.get("current_sha256") and not spec.get("allow_create"):
+            raise ValueError("Registered configuration updates require current_sha256 or explicit allow_create")
+        resolved["registered_config_change"] = json.loads(json.dumps(spec))
+        resolved["backup_path"] = f"{spec.get('path')}.ops-agent.backup.{operation_id}"
+    return resolved
 
 
 class OpsAgentGraph:
@@ -96,6 +177,7 @@ class OpsAgentGraph:
                     context=state.get("context", {}),
                     capabilities=state.get("capabilities", []),
                     evidence=state.get("evidence", []),
+                    cancel_check=lambda: self._run_cancelled(state["run_id"]),
                 )
                 payload = decision.model_dump(mode="json")
                 run.request_json = payload["request"]
@@ -107,12 +189,31 @@ class OpsAgentGraph:
                     "decision": payload,
                     "pending_calls": payload["tool_calls"],
                     "answer": answer or "",
+                    "claims": payload.get("claims") or [],
                     "step_count": state.get("step_count", 0) + 1,
                 }
             except Exception as exc:  # noqa: BLE001
+                db.refresh(run)
+                if run.status == "cancelled" or run.cancel_requested_at:
+                    self._step(db, state, "decision", {"status": "cancelled"}, status="cancelled")
+                    db.commit()
+                    return {
+                        "decision": {},
+                        "pending_calls": [],
+                        "answer": "本次处理已取消。",
+                        "status": "cancelled",
+                    }
                 run.status = "failed"
                 run.error_code = "DECISION_FAILED"
                 run.error_message = str(exc)[:2000]
+                self._step(
+                    db,
+                    state,
+                    "decision",
+                    {"error": "Structured model decision was invalid"},
+                    status="failed",
+                    error_code="DECISION_INVALID",
+                )
                 db.commit()
                 return {
                     "decision": {},
@@ -121,6 +222,12 @@ class OpsAgentGraph:
                     "status": "failed",
                     "error": str(exc)[:1000],
                 }
+
+    @staticmethod
+    def _run_cancelled(run_id: str) -> bool:
+        with SessionLocal() as db:
+            run = db.get(AgentRun, run_id)
+            return bool(not run or run.status == "cancelled" or run.cancel_requested_at)
 
     def prepare_actions(self, state: AgentState) -> dict:
         action_ids: list[str] = []
@@ -138,7 +245,13 @@ class OpsAgentGraph:
                     observations.append({"capability": definition.name, "status": "denied", "summary": "State-changing capabilities require an explicit propose_change decision"})
                     continue
                 try:
+                    action_id = str(uuid4())
                     arguments = definition.validate_arguments(call.get("arguments") or {})
+                    environment = db.get(Environment, state.get("environment_id"))
+                    if not environment:
+                        raise ValueError("Environment is missing")
+                    connection = db.get(Connection, environment.connection_id) if environment.connection_id else None
+                    resolved_spec = resolve_action_spec(environment, definition, arguments, action_id, connection)
                 except Exception as exc:  # noqa: BLE001
                     observations.append({"capability": definition.name, "status": "denied", "summary": str(exc)})
                     continue
@@ -150,10 +263,12 @@ class OpsAgentGraph:
                     "environment_id": state.get("environment_id"),
                     "target": target,
                     "arguments": arguments,
+                    "resolved_spec": resolved_spec,
+                    "rollback_spec": {},
                     "effect": definition.effect,
                 }
                 action = Action(
-                    id=str(uuid4()),
+                    id=action_id,
                     run_id=state["run_id"],
                     capability_name=definition.name,
                     capability_version=definition.version,
@@ -161,6 +276,8 @@ class OpsAgentGraph:
                     environment_id=state.get("environment_id"),
                     target_json=target,
                     arguments_json=arguments,
+                    resolved_spec_json=resolved_spec,
+                    rollback_spec_json={},
                     purpose=call.get("purpose"),
                     effect=definition.effect,
                     action_hash=compute_action_hash(snapshot),
@@ -185,6 +302,11 @@ class OpsAgentGraph:
                         action.status = "precheck_failed"
                         observations.append({"action_id": action.id, "capability": definition.name, "status": "denied", "summary": "变更前置检查失败，未创建审批。"})
                     else:
+                        rollback_spec = self._build_rollback_spec(action, definition, precheck)
+                        action.rollback_spec_json = self._policy_checked_rollback_spec(
+                            db, state["user_id"], action, rollback_spec
+                        )
+                        action.action_hash = compute_action_hash(self._action_snapshot(action))
                         action.status = "waiting_for_approval"
                         requires_approval = True
                         project = db.get(Project, action.project_id)
@@ -194,8 +316,8 @@ class OpsAgentGraph:
                                 action_id=action.id,
                                 action_hash=action.action_hash,
                                 requested_from=project.owner_id,
-                                impact_summary=f"执行 {definition.name}，目标 {target.get('name') or '当前环境'}；前置检查 {definition.precheck} 已通过；执行后使用 {definition.verifier} 验证",
-                                risk_summary=policy.reason + (f"；可用回滚能力：{definition.rollback}" if definition.rollback else "；无自动回滚能力"),
+                                impact_summary=approval_summaries(definition.name, target, action.rollback_spec_json)[0],
+                                risk_summary=approval_summaries(definition.name, target, action.rollback_spec_json)[1],
                                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
                             )
                         )
@@ -235,11 +357,14 @@ class OpsAgentGraph:
                     observations.append({"action_id": action.id, "status": "cancelled", "summary": "Run was cancelled before execution"})
                     break
                 definition = registry.get(action.capability_name)
-                if not definition or action.status in {"denied", "rejected", "expired", "precheck_failed", "cancelled", "needs_clarification"}:
+                if not definition or action.status in {
+                    "denied", "rejected", "expired", "precheck_failed", "cancelled", "needs_clarification",
+                    "running", "executing", "succeeded", "verified", "failed", "verification_failed", "rolled_back",
+                }:
                     continue
                 if action.effect == "change":
                     approval = db.scalar(select(Approval).where(Approval.action_id == action.id))
-                    snapshot = {"capability": action.capability_name, "version": action.capability_version, "project_id": action.project_id, "environment_id": action.environment_id, "target": action.target_json, "arguments": action.arguments_json, "effect": action.effect}
+                    snapshot = self._action_snapshot(action)
                     if not approval or approval.decision != "approved" or approval.expires_at <= datetime.now(timezone.utc) or approval.action_hash != compute_action_hash(snapshot):
                         action.status = "approval_invalid"
                         observations.append({"action_id": action.id, "status": "denied", "summary": "Approval is missing, expired or no longer matches the action"})
@@ -257,15 +382,53 @@ class OpsAgentGraph:
                         action.status = "precheck_changed"
                         observations.append({"action_id": action.id, "status": "denied", "summary": "执行前复核未通过，未执行状态变更。"})
                         continue
-                action.status = "running"
-                observation = self.executor.execute(db, action, definition)
+                expected_status = "approved" if action.effect == "change" else "ready"
+                execution_token = str(uuid4())
+                claimed = db.scalar(
+                    update(Action)
+                    .where(Action.id == action.id, Action.status == expected_status)
+                    .values(status="executing", execution_token=execution_token, execution_started_at=datetime.now(timezone.utc))
+                    .returning(Action.id)
+                )
+                if not claimed:
+                    continue
+                db.commit()
+                action = db.get(Action, action.id)
+                try:
+                    observation = self.executor.execute(db, action, definition)
+                except Exception as exc:  # noqa: BLE001
+                    action.status = "failed"
+                    action.execution_finished_at = datetime.now(timezone.utc)
+                    observations.append({"action_id": action.id, "capability": action.capability_name, "status": "failed", "summary": "Runtime execution failed", "error": str(exc)[:1000]})
+                    if action.effect == "change":
+                        rollback = self.executor.rollback(db, action, definition)
+                        observations.append({**rollback, "rollback_for": action.id})
+                        action.status = "rolled_back" if rollback.get("status") == "success" else "rollback_failed"
+                    append_audit_event(db, actor_type="agent", actor_id=state["run_id"], event_type="action.executed", payload={"status": action.status}, project_id=action.project_id, environment_id=action.environment_id, run_id=action.run_id, action_id=action.id)
+                    db.commit()
+                    continue
                 executed_calls += 1
                 observations.append(observation)
+                action.execution_finished_at = datetime.now(timezone.utc)
+                if action.effect == "read":
+                    action.status = "succeeded" if observation["status"] == "success" else "failed"
+                if action.effect == "change" and observation["status"] != "success":
+                    rollback = self.executor.rollback(db, action, definition)
+                    observations.append({**rollback, "rollback_for": action.id})
+                    action.status = "rolled_back" if rollback.get("status") == "success" else "rollback_failed"
                 if action.effect == "change" and observation["status"] == "success" and definition.verifier:
                     verifier = registry.get(definition.verifier)
+                    if not verifier:
+                        action.status = "verification_failed"
+                        observations.append({"action_id": action.id, "status": "failed", "summary": "Registered verifier is missing"})
+                        rollback = self.executor.rollback(db, action, definition)
+                        observations.append({**rollback, "rollback_for": action.id})
+                        action.status = "rolled_back" if rollback.get("status") == "success" else "rollback_failed"
+                        append_audit_event(db, actor_type="agent", actor_id=state["run_id"], event_type="action.executed", payload={"status": action.status}, project_id=action.project_id, environment_id=action.environment_id, run_id=action.run_id, action_id=action.id)
+                        continue
                     verify_arguments = {name: action.arguments_json[name] for name in verifier.arguments if name in action.arguments_json}
-                    verify_snapshot = {"capability": verifier.name, "version": verifier.version, "project_id": action.project_id, "environment_id": action.environment_id, "target": action.target_json, "arguments": verify_arguments, "effect": "read"}
-                    verify_action = Action(id=str(uuid4()), run_id=action.run_id, capability_name=verifier.name, capability_version=verifier.version, project_id=action.project_id, environment_id=action.environment_id, target_json=action.target_json, arguments_json=verify_arguments, purpose="Post-change verification", effect="read", action_hash=compute_action_hash(verify_snapshot), status="running")
+                    verify_snapshot = {"capability": verifier.name, "version": verifier.version, "project_id": action.project_id, "environment_id": action.environment_id, "target": action.target_json, "arguments": verify_arguments, "resolved_spec": action.resolved_spec_json, "rollback_spec": {}, "effect": "read"}
+                    verify_action = Action(id=str(uuid4()), run_id=action.run_id, capability_name=verifier.name, capability_version=verifier.version, project_id=action.project_id, environment_id=action.environment_id, target_json=action.target_json, arguments_json=verify_arguments, resolved_spec_json=action.resolved_spec_json, rollback_spec_json={}, purpose="Post-change verification", effect="read", action_hash=compute_action_hash(verify_snapshot), status="executing", execution_started_at=datetime.now(timezone.utc))
                     db.add(verify_action)
                     db.flush()
                     verify_policy = self.policy.evaluate(db, verify_action, verifier, state["user_id"])
@@ -276,11 +439,17 @@ class OpsAgentGraph:
                     else:
                         verification = self.executor.execute(db, verify_action, verifier)
                         executed_calls += 1
+                        verify_action.status = "succeeded" if verification["status"] == "success" else "failed"
+                        verify_action.execution_finished_at = datetime.now(timezone.utc)
                     verification["verification_for"] = action.id
                     observations.append(verification)
                     action.status = "verified" if self._verification_satisfied(action, verification) else "verification_failed"
-                    if action.status == "verification_failed" and definition.rollback:
-                        observations.append({"action_id": action.id, "status": "rollback_available", "summary": f"验证未通过；可提出受控回滚 {definition.rollback}，回滚仍需重新经过策略与审批。", "rollback_capability": definition.rollback})
+                    if action.status == "verification_failed":
+                        rollback = self.executor.rollback(db, action, definition)
+                        observations.append({**rollback, "rollback_for": action.id})
+                        action.status = "rolled_back" if rollback.get("status") == "success" else "rollback_failed"
+                    elif action.status == "verified":
+                        self.executor.finalize(db, action, definition)
                 append_audit_event(db, actor_type="agent", actor_id=state["run_id"], event_type="action.executed", payload={"status": action.status}, project_id=action.project_id, environment_id=action.environment_id, run_id=action.run_id, action_id=action.id)
             self._step(db, state, "execute", {"observations": len(observations)})
             db.commit()
@@ -291,6 +460,8 @@ class OpsAgentGraph:
         with SessionLocal() as db:
             run = db.get(AgentRun, state["run_id"])
             terminal_status = state.get("status") if state.get("status") in {"failed", "cancelled"} else "completed"
+            if run.status == "cancelled" or run.cancel_requested_at:
+                terminal_status = "cancelled"
             run.status = terminal_status
             run.completed_at = datetime.now(timezone.utc)
             run.current_step = "finish"
@@ -363,7 +534,21 @@ class OpsAgentGraph:
                 return desired == replicas and available == replicas
             running = [item for item in records if str(item.get("State") or item.get("state") or "").lower() == "running"]
             return len(running) == replicas and len(records) == replicas
-        return True
+        if action.capability_name == "deployment.apply_registered":
+            if data.get("deployment_ready") is True:
+                return True
+            expected_instances = int(data.get("expected_instances") or 1)
+            return len(records) == expected_instances and all(
+                str(item.get("State") or item.get("state") or "").lower() == "running"
+                and str(item.get("Health") or item.get("health") or "healthy").lower() in {"", "healthy"}
+                and int(item.get("ExitCode") or item.get("exit_code") or 0) == 0
+                for item in records
+            )
+        if action.capability_name == "config.update_registered":
+            expected = data.get("expected_sha256")
+            actual = data.get("actual_sha256")
+            return bool(expected) and expected == actual
+        return False
 
     @staticmethod
     def _precheck_satisfied(action: Action, observation: dict) -> bool:
@@ -371,7 +556,7 @@ class OpsAgentGraph:
             return False
         if action.capability_name == "service.restart":
             return bool(OpsAgentGraph._runtime_records(observation.get("data") or {})) or "activestate=" in json.dumps(observation.get("data") or {}).lower()
-        return True
+        return action.capability_name in {"service.start", "service.stop", "service.scale"} or observation.get("status") == "success"
 
     @staticmethod
     def _runtime_records(data: dict) -> list[dict]:
@@ -397,22 +582,141 @@ class OpsAgentGraph:
         if not precheck_name:
             return {"action_id": change_action.id, "capability": "precheck", "status": "failed", "summary": "No registered precheck is available"}
         definition = registry.get(precheck_name)
+        if not definition:
+            return {"action_id": change_action.id, "capability": precheck_name, "status": "failed", "summary": "Registered precheck is missing"}
         arguments = {name: change_action.arguments_json[name] for name in definition.arguments if name in change_action.arguments_json}
-        snapshot = {"capability": definition.name, "version": definition.version, "project_id": change_action.project_id, "environment_id": change_action.environment_id, "target": change_action.target_json, "arguments": arguments, "effect": "read"}
-        precheck_action = Action(id=str(uuid4()), run_id=change_action.run_id, capability_name=definition.name, capability_version=definition.version, project_id=change_action.project_id, environment_id=change_action.environment_id, target_json=change_action.target_json, arguments_json=arguments, purpose=f"Precheck for {change_action.capability_name}", effect="read", action_hash=compute_action_hash(snapshot), status="running")
+        snapshot = {"capability": definition.name, "version": definition.version, "project_id": change_action.project_id, "environment_id": change_action.environment_id, "target": change_action.target_json, "arguments": arguments, "resolved_spec": change_action.resolved_spec_json, "rollback_spec": {}, "effect": "read"}
+        precheck_action = Action(id=str(uuid4()), run_id=change_action.run_id, capability_name=definition.name, capability_version=definition.version, project_id=change_action.project_id, environment_id=change_action.environment_id, target_json=change_action.target_json, arguments_json=arguments, resolved_spec_json=change_action.resolved_spec_json, rollback_spec_json={}, purpose=f"Precheck for {change_action.capability_name}", effect="read", action_hash=compute_action_hash(snapshot), status="executing", execution_started_at=datetime.now(timezone.utc))
         db.add(precheck_action); db.flush()
         policy = self.policy.evaluate(db, precheck_action, definition, state["user_id"])
         db.add(PolicyDecision(action_id=precheck_action.id, decision=policy.decision, risk_level=policy.risk_level, reason_code=policy.reason_code, reason=policy.reason, matched_policies_json=policy.matched_policies))
         if policy.decision != "allow":
             precheck_action.status = "denied"
             return {"action_id": precheck_action.id, "capability": definition.name, "status": "denied", "summary": policy.reason}
-        return self.executor.execute(db, precheck_action, definition)
+        observation = self.executor.execute(db, precheck_action, definition)
+        precheck_action.status = "succeeded" if observation.get("status") == "success" else "failed"
+        precheck_action.execution_finished_at = datetime.now(timezone.utc)
+        return observation
 
     @staticmethod
-    def _step(db, state: AgentState, step_type: str, output: dict) -> None:
+    def _action_snapshot(action: Action) -> dict[str, Any]:
+        return {
+            "capability": action.capability_name,
+            "version": action.capability_version,
+            "project_id": action.project_id,
+            "environment_id": action.environment_id,
+            "target": action.target_json,
+            "arguments": action.arguments_json,
+            "resolved_spec": action.resolved_spec_json,
+            "rollback_spec": action.rollback_spec_json,
+            "effect": action.effect,
+        }
+
+    @staticmethod
+    def _build_rollback_spec(action: Action, definition, precheck: dict) -> dict[str, Any]:
+        original_running = OpsAgentGraph._service_running(precheck)
+        if action.capability_name == "service.start":
+            if original_running:
+                return {"kind": "no_op", "reason": "service was already running"}
+            return {"kind": "capability", "capability": "service.stop", "arguments": {"service": action.arguments_json["service"]}}
+        if action.capability_name == "service.stop":
+            if original_running is False:
+                return {"kind": "no_op", "reason": "service was already stopped"}
+            return {"kind": "capability", "capability": "service.start", "arguments": {"service": action.arguments_json["service"]}}
+        if action.capability_name == "service.restart":
+            if original_running is True:
+                capability = "service.start"
+            elif original_running is False:
+                capability = "service.stop"
+            else:
+                return {"kind": "unavailable", "reason": "original service state could not be determined"}
+            return {"kind": "capability", "capability": capability, "arguments": {"service": action.arguments_json["service"]}}
+        if action.capability_name == "service.scale":
+            records = OpsAgentGraph._runtime_records(precheck.get("data") or {})
+            if records and isinstance(records[0].get("spec"), dict):
+                replicas = int(records[0]["spec"].get("replicas") or 0)
+            else:
+                replicas = len([item for item in records if str(item.get("State") or "").lower() == "running"])
+            return {"kind": "capability", "capability": "service.scale", "arguments": {"service": action.arguments_json["service"], "replicas": replicas}}
+        if action.capability_name == "config.update_registered":
+            return {"kind": "config_backup", "backup_path": action.resolved_spec_json.get("backup_path")}
+        if action.capability_name == "deployment.apply_registered":
+            deployment = action.resolved_spec_json.get("registered_deployment") or {}
+            return {"kind": "deployment", "mode": deployment.get("rollback") or "rollout_undo", "service": deployment.get("service")}
+        if definition.rollback:
+            return {"kind": "capability", "capability": definition.rollback, "arguments": action.arguments_json}
+        return {"kind": "unavailable"}
+
+    def _policy_checked_rollback_spec(
+        self,
+        db,
+        user_id: int,
+        action: Action,
+        rollback_spec: dict[str, Any],
+    ) -> dict[str, Any]:
+        if rollback_spec.get("kind") != "capability":
+            return rollback_spec
+        definition = registry.get(str(rollback_spec.get("capability") or ""))
+        if not definition:
+            return {"kind": "unavailable", "reason": "registered rollback capability is missing"}
+        arguments = rollback_spec.get("arguments") or {}
+        candidate = Action(
+            id=str(uuid4()),
+            run_id=action.run_id,
+            capability_name=definition.name,
+            capability_version=definition.version,
+            project_id=action.project_id,
+            environment_id=action.environment_id,
+            target_json=action.target_json,
+            arguments_json=arguments,
+            resolved_spec_json=action.resolved_spec_json,
+            rollback_spec_json={},
+            purpose=f"Policy preview for rollback of {action.id}",
+            effect=definition.effect,
+            action_hash="",
+            status="proposed",
+        )
+        policy = self.policy.evaluate(db, candidate, definition, user_id)
+        if policy.decision not in {"allow", "require_approval"}:
+            return {"kind": "unavailable", "reason": policy.reason}
+        return rollback_spec
+
+    @staticmethod
+    def _service_running(observation: dict) -> bool | None:
+        data = observation.get("data") or {}
+        text = json.dumps(data, ensure_ascii=False, separators=(",", ":")).lower()
+        if "activestate=active" in text:
+            return True
+        if "activestate=inactive" in text:
+            return False
+        records = OpsAgentGraph._runtime_records(data)
+        if records:
+            return any(str(item.get("State") or item.get("state") or "").lower() == "running" for item in records)
+        return None
+
+    @staticmethod
+    def _step(
+        db,
+        state: AgentState,
+        step_type: str,
+        output: dict,
+        *,
+        status: str = "success",
+        error_code: str | None = None,
+    ) -> None:
         run = db.get(AgentRun, state["run_id"])
         sequence = (run.step_count if run else 0) + 1
         if run:
             run.step_count = sequence
             run.current_step = step_type
-        db.add(AgentStep(run_id=state["run_id"], sequence=sequence, step_type=step_type, status="success", output_summary_json=output, finished_at=datetime.now(timezone.utc)))
+        db.add(
+            AgentStep(
+                run_id=state["run_id"],
+                sequence=sequence,
+                step_type=step_type,
+                status=status,
+                output_summary_json=output,
+                error_code=error_code,
+                finished_at=datetime.now(timezone.utc),
+            )
+        )

@@ -1,8 +1,10 @@
-from typing import Any, Literal
+from pathlib import PurePosixPath
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, ValidationError, field_validator, model_validator
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_environment, require_environment_permission, require_project, require_project_permission
@@ -32,25 +34,133 @@ class ProjectPatch(BaseModel):
 
 
 class EnvironmentPayload(BaseModel):
-    name: str = "default"
+    name: str = Field(default="default", min_length=1, max_length=80)
     runtime_type: Literal["manual", "docker_compose", "kubernetes", "systemd", "mixed"] = "manual"
     connection_id: int | None = None
-    workdir: str | None = None
-    namespace: str | None = None
+    workdir: str | None = Field(default=None, max_length=500)
+    namespace: str | None = Field(default=None, max_length=255)
     config_json: dict[str, Any] = Field(default_factory=dict)
     policy_profile: Literal["development", "test", "staging", "production"] = "development"
     is_default: bool = False
 
+    @model_validator(mode="after")
+    def validate_config(self):
+        self.config_json = validate_runtime_config(self.runtime_type, self.config_json)
+        return self
+
 
 class EnvironmentPatch(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=80)
     runtime_type: Literal["manual", "docker_compose", "kubernetes", "systemd", "mixed"] | None = None
     connection_id: int | None = None
-    workdir: str | None = None
-    namespace: str | None = None
+    workdir: str | None = Field(default=None, max_length=500)
+    namespace: str | None = Field(default=None, max_length=255)
     config_json: dict[str, Any] | None = None
     policy_profile: Literal["development", "test", "staging", "production"] | None = None
     is_default: bool | None = None
+
+
+ShortName = Annotated[str, Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]*$")]
+
+
+def validate_relative_path(value: str) -> str:
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or "\x00" in value or "\n" in value:
+        raise ValueError("Path must be relative and stay inside the environment workdir")
+    return value
+
+
+RelativePath = Annotated[str, Field(min_length=1, max_length=500), AfterValidator(validate_relative_path)]
+
+
+class RegisteredDeploymentConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    service: ShortName
+    manifest: RelativePath | None = None
+    rollback: Literal["stop", "restart", "rollout_undo"]
+    expected_instances: int = Field(default=1, ge=1, le=100)
+
+
+class RegisteredConfigChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: RelativePath
+    content: str = Field(max_length=2_000_000)
+    current_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+    allow_create: bool = False
+
+    @model_validator(mode="after")
+    def require_precondition(self):
+        if not self.current_sha256 and not self.allow_create:
+            raise ValueError("current_sha256 or allow_create=true is required")
+        return self
+
+
+class RuntimeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    known_services: list[ShortName] = Field(default_factory=list, max_length=500)
+    services: list[ShortName] | None = Field(default=None, max_length=500)
+    health_endpoints: dict[ShortName, HttpUrl] = Field(default_factory=dict)
+    health_success_statuses: dict[ShortName, list[Annotated[int, Field(ge=100, le=599)]]] = Field(default_factory=dict)
+    registered_deployments: dict[ShortName, RegisteredDeploymentConfig] = Field(default_factory=dict)
+    registered_config_changes: dict[ShortName, RegisteredConfigChange] = Field(default_factory=dict)
+    manual_entities: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+    manual_relationships: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    context_files: list[RelativePath] = Field(default_factory=list, max_length=100)
+    nginx_config_files: list[RelativePath] = Field(default_factory=list, max_length=100)
+
+    @field_validator("health_endpoints")
+    @classmethod
+    def validate_health_endpoints(cls, value: dict[str, HttpUrl]) -> dict[str, HttpUrl]:
+        for endpoint in value.values():
+            if endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+                raise ValueError("Health endpoints cannot contain credentials, query strings or fragments")
+        return value
+
+
+class DockerComposeRuntimeConfig(RuntimeConfig):
+    compose_file: RelativePath = "docker-compose.yml"
+
+    @model_validator(mode="after")
+    def validate_deployments(self):
+        if any(item.rollback not in {"stop", "restart"} for item in self.registered_deployments.values()):
+            raise ValueError("Docker Compose deployment rollback must be stop or restart")
+        return self
+
+
+class KubernetesRuntimeConfig(RuntimeConfig):
+    @model_validator(mode="after")
+    def validate_deployments(self):
+        if any(not item.manifest for item in self.registered_deployments.values()):
+            raise ValueError("Kubernetes registered deployments require a manifest")
+        if any(item.rollback != "rollout_undo" for item in self.registered_deployments.values()):
+            raise ValueError("Kubernetes registered deployments require rollback=rollout_undo")
+        return self
+
+
+class SystemdRuntimeConfig(RuntimeConfig):
+    registered_deployments: dict = Field(default_factory=dict, max_length=0)
+
+
+class ManualRuntimeConfig(RuntimeConfig):
+    registered_deployments: dict = Field(default_factory=dict, max_length=0)
+
+
+class MixedRuntimeConfig(DockerComposeRuntimeConfig):
+    pass
+
+
+def validate_runtime_config(runtime_type: str, value: dict[str, Any]) -> dict[str, Any]:
+    model = {
+        "manual": ManualRuntimeConfig,
+        "docker_compose": DockerComposeRuntimeConfig,
+        "kubernetes": KubernetesRuntimeConfig,
+        "systemd": SystemdRuntimeConfig,
+        "mixed": MixedRuntimeConfig,
+    }.get(runtime_type)
+    if not model:
+        raise ValueError(f"Unsupported runtime type: {runtime_type}")
+    config = model.model_validate(value)
+    return config.model_dump(mode="json", exclude_none=True)
 
 
 def project_out(item: Project) -> dict:
@@ -110,7 +220,15 @@ def list_environments(project_id: int, db: Session = Depends(get_db), user: User
 def create_environment(project_id: int, payload: EnvironmentPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     project = require_project_permission(db, user, project_id, "project.manage")
     validate_connection_scope(db, project, payload.connection_id)
-    row = Environment(project_id=project_id, **payload.model_dump()); db.add(row); db.flush(); collect_manual_services(db, row); db.commit(); db.refresh(row); return environment_out(row)
+    if payload.is_default:
+        db.execute(update(Environment).where(Environment.project_id == project_id, Environment.is_default.is_(True)).values(is_default=False))
+    row = Environment(project_id=project_id, **payload.model_dump()); db.add(row)
+    try:
+        db.flush(); collect_manual_services(db, row); db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Environment name or default selection conflicts with an existing environment") from exc
+    db.refresh(row); return environment_out(row)
 
 
 @router.patch("/environments/{environment_id}")
@@ -119,13 +237,35 @@ def patch_environment(environment_id: int, payload: EnvironmentPatch, db: Sessio
     project = db.get(Project, row.project_id)
     if "connection_id" in payload.model_fields_set:
         validate_connection_scope(db, project, payload.connection_id)
+    if payload.config_json is not None or payload.runtime_type is not None:
+        runtime_type = payload.runtime_type or row.runtime_type
+        config_json = payload.config_json if payload.config_json is not None else row.config_json
+        try:
+            validated_config = validate_runtime_config(runtime_type, config_json or {})
+        except (ValidationError, ValueError) as exc:
+            raise HTTPException(422, "Environment configuration is invalid for the selected runtime") from exc
+        if payload.config_json is not None:
+            payload.config_json = validated_config
+        else:
+            row.config_json = validated_config
+    if payload.is_default is True:
+        db.execute(update(Environment).where(Environment.project_id == row.project_id, Environment.id != row.id, Environment.is_default.is_(True)).values(is_default=False))
     for key, value in payload.model_dump(exclude_unset=True).items(): setattr(row, key, value)
-    db.commit(); db.refresh(row); return environment_out(row)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Environment name or default selection conflicts with an existing environment") from exc
+    db.refresh(row); return environment_out(row)
 
 
 @router.delete("/environments/{environment_id}")
 def delete_environment(environment_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    row = require_environment_permission(db, user, environment_id, "project.manage"); row.is_active = False; db.commit(); return environment_out(row)
+    row = require_environment_permission(db, user, environment_id, "project.manage"); was_default = row.is_default; row.is_active = False; row.is_default = False
+    if was_default:
+        replacement = db.scalar(select(Environment).where(Environment.project_id == row.project_id, Environment.id != row.id, Environment.is_active.is_(True)).order_by(Environment.updated_at.desc()).limit(1))
+        if replacement: replacement.is_default = True
+    db.commit(); return environment_out(row)
 
 
 @router.post("/environments/{environment_id}/test-connection")
