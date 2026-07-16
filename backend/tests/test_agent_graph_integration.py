@@ -105,6 +105,7 @@ def test_direct_answer_and_read_investigation_and_approval_resume():
             assert run.status == "queued" and run.current_step == "queued_resume"
             finished = process_claimed_run(db, graph, claim_run(db, "test-worker", run.id), "test-worker")
             assert finished["assistant_message"]["content"] == "Redis 已重启并完成验证。"
+            db.expire_all()
             status_actions = list(db.scalars(select(Action).where(Action.run_id == run.id, Action.capability_name == "service.status")))
             assert len(status_actions) == 3  # initial precheck, post-approval recheck, verifier
             change_action = db.scalar(select(Action).where(Action.run_id == run.id, Action.capability_name == "service.restart"))

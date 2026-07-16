@@ -5,7 +5,8 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import ProgrammingError
 
 from app.agent.service import _persist_result, claim_run, create_run, process_claimed_run, recover_expired_runs
 from app.audit.service import append_audit_event, verify_audit_chain
@@ -276,11 +277,23 @@ def test_audit_chain_verifier_detects_and_reports_tampering():
         third = append_audit_event(db, actor_type="test", actor_id="tester", event_type="chain.test", payload={"value": 3})
         db.commit()
         assert verify_audit_chain(db)["valid"] is True
+
+        second_id = second.id
         second.payload_json = {"value": "tampered"}
+        with pytest.raises(ProgrammingError, match="audit_events is append-only"):
+            db.commit()
+        db.rollback()
+
+        db.execute(text("ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only"))
+        db.execute(update(AuditEvent).where(AuditEvent.id == second_id).values(payload_json={"value": "tampered"}))
+        db.execute(text("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only"))
         db.commit()
         invalid = verify_audit_chain(db)
         assert invalid["valid"] is False
         assert invalid["reason"] == "event_hash_mismatch"
-        second.payload_json = {"value": 2}
+
+        db.execute(text("ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only"))
+        db.execute(update(AuditEvent).where(AuditEvent.id == second_id).values(payload_json={"value": 2}))
+        db.execute(text("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only"))
         db.commit()
         assert verify_audit_chain(db)["valid"] is True

@@ -18,6 +18,10 @@ from app.utils.public_config import public_config
 
 logger = logging.getLogger(__name__)
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+WORKER_LEASE_EXPIRED_ANSWER = (
+    "处理任务的 Worker 心跳已超时。系统为避免重复执行变更，没有自动重放任务，"
+    "也没有采用可能晚到的执行结果；请确认目标当前状态后重新发起。"
+)
 
 
 def create_run(db: Session, session: ChatSession, user_id: int, content: str) -> dict:
@@ -77,7 +81,7 @@ def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
     elif run.status == "failed" and run.error_code == "WORKER_LEASE_EXPIRED":
         result = {
             "status": "failed",
-            "answer": "处理任务的 Worker 心跳已超时。系统为避免重复执行变更，没有采用晚到结果；请确认目标当前状态后重新发起。",
+            "answer": WORKER_LEASE_EXPIRED_ANSWER,
             "claims": [{"text": "Worker 心跳超时，晚到结果未被采用。", "claim_type": "gap", "evidence_ids": [], "confidence": 0.9}],
         }
     interrupts = result.get("__interrupt__") or []
@@ -238,7 +242,7 @@ def recover_expired_runs(db: Session) -> int:
             run,
             {
                 "status": "failed",
-                "answer": "处理任务的 Worker 心跳已超时。系统为避免重复执行变更，没有自动重放任务；请确认目标当前状态后重新发起。",
+                "answer": WORKER_LEASE_EXPIRED_ANSWER,
                 "claims": [{"text": "Worker 心跳超时，任务已安全终止且未自动重放。", "claim_type": "gap", "evidence_ids": [], "confidence": 0.9}],
             },
         )
