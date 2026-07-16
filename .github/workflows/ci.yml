@@ -74,6 +74,8 @@ jobs:
     needs: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare non-secret CI environment
+        run: cp .env.example .env
       - name: Validate Compose
         run: docker compose config --quiet
       - name: Build application images
