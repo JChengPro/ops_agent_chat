@@ -36,7 +36,7 @@ def session_out(item: ChatSession) -> dict:
 @router.get("/projects/{project_id}/chat-sessions")
 def project_sessions(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     require_project(db, user, project_id)
-    return [session_out(item) for item in db.scalars(select(ChatSession).where(ChatSession.project_id == project_id, ChatSession.user_id == user.id, ChatSession.status != "deleted").order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc())).all()]
+    return [session_out(item) for item in db.scalars(select(ChatSession).where(ChatSession.project_id == project_id, ChatSession.user_id == user.id, ChatSession.status.not_in(["deleted", "system"])).order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc())).all()]
 
 
 @router.post("/projects/{project_id}/chat-sessions")

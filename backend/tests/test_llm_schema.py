@@ -73,17 +73,17 @@ def test_empty_tool_decision_has_safe_clarification_fallback():
     assert "具体操作目标" in decision.clarification_question
 
 
-def test_tool_decision_supports_the_run_level_tool_budget():
+def test_tool_decision_does_not_impose_an_arbitrary_call_count_limit():
     tool_calls = [
         {"capability": "service.status", "arguments": {"service": f"service-{index}"}, "purpose": "检查服务状态"}
-        for index in range(50)
+        for index in range(75)
     ]
     decision = AgentDecision.model_validate({
         "decision": "invoke_tools",
         "request": request(goal="investigate", scope="runtime", time_focus="current", requested_effect="read"),
         "tool_calls": tool_calls,
     })
-    assert len(decision.tool_calls) == 50
+    assert len(decision.tool_calls) == 75
 
 
 def test_non_response_claims_are_removed_during_normalization():

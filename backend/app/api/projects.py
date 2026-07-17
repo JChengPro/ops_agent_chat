@@ -14,7 +14,9 @@ from app.context.jobs import collector_run_out, queue_environment_collectors
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.context import CollectorRun
+from app.models.monitoring import MonitorEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
+from app.monitoring.service import monitor_event_out
 from app.models.user import User
 from app.runtime.transports.ssh import SSHTransport
 from app.utils.public_config import public_config
@@ -42,6 +44,8 @@ class EnvironmentPayload(BaseModel):
     namespace: str | None = Field(default=None, max_length=255)
     config_json: dict[str, Any] = Field(default_factory=dict)
     policy_profile: Literal["development", "test", "staging", "production"] = "development"
+    monitoring_enabled: bool = False
+    auto_remediation_enabled: bool = False
     is_default: bool = False
 
     @model_validator(mode="after")
@@ -58,6 +62,8 @@ class EnvironmentPatch(BaseModel):
     namespace: str | None = Field(default=None, max_length=255)
     config_json: dict[str, Any] | None = None
     policy_profile: Literal["development", "test", "staging", "production"] | None = None
+    monitoring_enabled: bool | None = None
+    auto_remediation_enabled: bool | None = None
     is_default: bool | None = None
 
 
@@ -177,7 +183,22 @@ def validate_connection_scope(db: Session, project: Project, connection_id: int 
 
 
 def environment_out(item: Environment) -> dict:
-    return {"id": item.id, "project_id": item.project_id, "name": item.name, "runtime_type": item.runtime_type, "connection_id": item.connection_id, "workdir": item.workdir, "namespace": item.namespace, "config_json": public_config(item.config_json), "policy_profile": item.policy_profile, "is_default": item.is_default, "is_active": item.is_active}
+    return {
+        "id": item.id,
+        "project_id": item.project_id,
+        "name": item.name,
+        "runtime_type": item.runtime_type,
+        "connection_id": item.connection_id,
+        "workdir": item.workdir,
+        "namespace": item.namespace,
+        "config_json": public_config(item.config_json),
+        "policy_profile": item.policy_profile,
+        "monitoring_enabled": item.monitoring_enabled,
+        "auto_remediation_enabled": item.auto_remediation_enabled,
+        "last_monitored_at": item.last_monitored_at,
+        "is_default": item.is_default,
+        "is_active": item.is_active,
+    }
 
 
 @router.get("/projects")
@@ -251,6 +272,8 @@ def patch_environment(environment_id: int, payload: EnvironmentPatch, db: Sessio
             row.config_json = validated_config
     if payload.is_default is True:
         db.execute(update(Environment).where(Environment.project_id == row.project_id, Environment.id != row.id, Environment.is_default.is_(True)).values(is_default=False))
+    if "monitoring_enabled" in payload.model_fields_set:
+        row.next_monitor_at = datetime.now(timezone.utc) if payload.monitoring_enabled else None
     for key, value in payload.model_dump(exclude_unset=True).items(): setattr(row, key, value)
     try:
         db.commit()
@@ -258,6 +281,24 @@ def patch_environment(environment_id: int, payload: EnvironmentPatch, db: Sessio
         db.rollback()
         raise HTTPException(409, "Environment name or default selection conflicts with an existing environment") from exc
     db.refresh(row); return environment_out(row)
+
+
+@router.get("/projects/{project_id}/monitor-events")
+def list_monitor_events(
+    project_id: int,
+    environment_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    require_project(db, user, project_id)
+    statement = select(MonitorEvent).where(MonitorEvent.project_id == project_id)
+    if environment_id is not None:
+        environment = db.get(Environment, environment_id)
+        if not environment or environment.project_id != project_id:
+            raise HTTPException(400, "Environment does not belong to the selected project")
+        statement = statement.where(MonitorEvent.environment_id == environment_id)
+    rows = db.scalars(statement.order_by(MonitorEvent.last_seen_at.desc()).limit(100)).all()
+    return [monitor_event_out(item) for item in rows]
 
 
 @router.delete("/environments/{environment_id}")

@@ -39,7 +39,7 @@ class ClaimDraft(BaseModel):
 class AgentDecision(BaseModel):
     decision: Literal["respond", "clarify", "invoke_tools", "propose_change"]
     request: RequestUnderstanding
-    tool_calls: list[ToolCallDecision] = Field(default_factory=list, max_length=50)
+    tool_calls: list[ToolCallDecision] = Field(default_factory=list)
     answer: str | None = Field(default=None, max_length=50000)
     clarification_question: str | None = Field(default=None, max_length=4000)
     claims: list[ClaimDraft] = Field(default_factory=list, max_length=20)

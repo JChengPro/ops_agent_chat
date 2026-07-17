@@ -38,6 +38,8 @@ def configuration_revision(environment: Any, connection: Any | None) -> str:
             "namespace": environment.namespace,
             "config": environment.config_json or {},
             "policy_profile": environment.policy_profile,
+            "monitoring_enabled": getattr(environment, "monitoring_enabled", False),
+            "auto_remediation_enabled": getattr(environment, "auto_remediation_enabled", False),
         },
         "connection": None if connection is None else {
             "id": connection.id,

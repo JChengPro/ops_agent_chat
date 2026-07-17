@@ -5,6 +5,7 @@ from app.models.context import CollectorRun, ContextSource, ProjectEntity, Proje
 from app.models.evidence import EvidenceClaim, EvidenceClaimLink, RuntimeEvidence
 from app.models.experience import ExperienceChunk, ExperienceItem
 from app.models.governance import AgentWorker, AuditEvent, LoginThrottle, MessageFeedback
+from app.models.monitoring import MonitorEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
 from app.models.user import User
 
@@ -12,6 +13,6 @@ __all__ = [
     "Action", "AgentRun", "AgentStep", "AgentWorker", "Approval", "AuditEvent", "CapabilityVersion",
     "ChatMessage", "ChatSession", "CollectorRun", "Connection", "ContextSource",
     "Environment", "EvidenceClaim", "EvidenceClaimLink", "ExperienceChunk", "ExperienceItem",
-    "LoginThrottle", "MessageFeedback", "ModelCall", "PolicyDecision", "Project", "ProjectEntity", "ProjectMember",
+    "LoginThrottle", "MessageFeedback", "ModelCall", "MonitorEvent", "PolicyDecision", "Project", "ProjectEntity", "ProjectMember",
     "ProjectRelationship", "RuntimeEvidence", "ToolInvocation", "User",
 ]

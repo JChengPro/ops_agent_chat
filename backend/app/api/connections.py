@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_project
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.project import Connection, Environment
@@ -66,8 +67,25 @@ def owned(db, user, connection_id):
 
 
 @router.get("")
-def list_connections(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return [out(item) for item in db.scalars(select(Connection).where(Connection.owner_id == user.id).order_by(Connection.name)).all()]
+def list_connections(
+    project_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if project_id is None:
+        statement = select(Connection).where(Connection.owner_id == user.id)
+    else:
+        project = require_project(db, user, project_id)
+        referenced_connections = select(Environment.connection_id).where(
+            Environment.project_id == project.id,
+            Environment.is_active.is_(True),
+            Environment.connection_id.is_not(None),
+        )
+        statement = select(Connection).where(
+            Connection.owner_id == project.owner_id,
+            Connection.id.in_(referenced_connections),
+        )
+    return [out(item) for item in db.scalars(statement.order_by(Connection.name)).all()]
 
 
 @router.post("")

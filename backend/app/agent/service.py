@@ -85,13 +85,10 @@ def resume_run(db: Session, agent, run: AgentRun) -> dict:
 
 
 def _graph_config(run_id: str) -> dict:
-    settings = get_settings()
-    recursion_limit = max(
-        25,
-        settings.agent_max_steps * 2 + 20,
-        settings.agent_max_tool_calls * 4 + 20,
-    )
-    return {"configurable": {"thread_id": run_id}, "recursion_limit": recursion_limit}
+    # LangGraph requires a finite recursion guard. Runtime cancellation and the
+    # wall-clock timeout remain the real safety boundaries; this value is not a
+    # product tool-call or reasoning-step limit.
+    return {"configurable": {"thread_id": run_id}, "recursion_limit": 1_000_000}
 
 
 def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:

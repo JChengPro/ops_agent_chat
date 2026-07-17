@@ -22,10 +22,9 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str = Field(default="high", alias="LLM_REASONING_EFFORT")
     llm_thinking_enabled: bool = Field(default=True, alias="LLM_THINKING_ENABLED")
     llm_timeout_seconds: int = Field(default=90, alias="LLM_TIMEOUT_SECONDS")
-    agent_max_steps: int = Field(default=120, alias="AGENT_MAX_STEPS")
-    agent_max_tool_calls: int = Field(default=50, alias="AGENT_MAX_TOOL_CALLS")
     agent_timeout_seconds: int = Field(default=300, alias="AGENT_TIMEOUT_SECONDS")
     agent_context_max_chars: int = Field(default=60000, alias="AGENT_CONTEXT_MAX_CHARS")
+    monitor_interval_seconds: int = Field(default=15, ge=5, alias="MONITOR_INTERVAL_SECONDS")
 
     admin_username: str = "admin"
     admin_email: str = "admin@example.com"

@@ -189,10 +189,6 @@ class OpsAgentGraph:
                 if run_state.status == "cancelled" or run_state.cancel_requested_at:
                     return {"decision": {}, "pending_calls": [], "answer": "本次处理已取消。", "status": "cancelled"}
                 return {"decision": {}, "pending_calls": [], "answer": "本次处理已由其他恢复流程安全终止。", "status": "failed"}
-        if state.get("tool_call_count", 0) >= settings.agent_max_tool_calls:
-            return {"decision": {}, "pending_calls": [], "answer": self._limit_answer(state, "tool_calls"), "status": "completed"}
-        if state.get("step_count", 0) >= settings.agent_max_steps:
-            return {"decision": {}, "pending_calls": [], "answer": self._limit_answer(state, "steps"), "status": "completed"}
         with SessionLocal() as db:
             run = db.get(AgentRun, state["run_id"])
             try:
@@ -285,11 +281,9 @@ class OpsAgentGraph:
         observations: list[dict] = []
         requires_approval = False
         precheck_calls = 0
-        reserved_calls = 0
         seen_calls: set[str] = set()
         with SessionLocal() as db:
             for call in state.get("pending_calls", []):
-                reserved_for_call = 0
                 call_key: str | None = None
                 definition = registry.get(call["capability"])
                 if not definition or not any(item["name"] == call["capability"] for item in state.get("capabilities", [])):
@@ -315,24 +309,13 @@ class OpsAgentGraph:
                             "summary": "Duplicate capability call was removed from this decision",
                         })
                         continue
-                    estimated_calls = 4 if definition.effect == "change" else 1
-                    if state.get("tool_call_count", 0) + reserved_calls + estimated_calls > settings.agent_max_tool_calls:
-                        observations.append({
-                            "capability": definition.name,
-                            "status": "denied",
-                            "summary": f"单次请求最多执行 {settings.agent_max_tool_calls} 次工具调用，本轮剩余额度不足，未继续执行该检查。",
-                        })
-                        continue
                     seen_calls.add(call_key)
-                    reserved_calls += estimated_calls
-                    reserved_for_call = estimated_calls
                     environment = db.get(Environment, state.get("environment_id"))
                     if not environment:
                         raise ValueError("Environment is missing")
                     connection = db.get(Connection, environment.connection_id) if environment.connection_id else None
                     resolved_spec = resolve_action_spec(environment, definition, arguments, action_id, connection)
                 except Exception as exc:  # noqa: BLE001
-                    reserved_calls -= reserved_for_call
                     if call_key:
                         seen_calls.discard(call_key)
                     observations.append({"capability": definition.name, "status": "denied", "summary": str(exc)})
@@ -368,11 +351,9 @@ class OpsAgentGraph:
                 db.add(PolicyDecision(action_id=action.id, decision=policy.decision, risk_level=policy.risk_level, reason_code=policy.reason_code, reason=policy.reason, matched_policies_json=policy.matched_policies, policy_version=self.policy.policy_version))
                 action_ids.append(action.id)
                 if policy.decision == "deny":
-                    reserved_calls -= reserved_for_call
                     action.status = "denied"
                     observations.append({"action_id": action.id, "capability": definition.name, "status": "denied", "summary": policy.reason})
                 elif policy.decision == "clarify":
-                    reserved_calls -= reserved_for_call
                     action.status = "needs_clarification"
                     observations.append({"action_id": action.id, "capability": definition.name, "status": "clarify", "summary": policy.reason})
                 elif policy.decision == "require_approval":
@@ -380,7 +361,6 @@ class OpsAgentGraph:
                     precheck_calls += 1
                     observations.append(precheck)
                     if not self._precheck_satisfied(action, precheck):
-                        reserved_calls -= max(0, reserved_for_call - 1)
                         action.status = "precheck_failed"
                         observations.append({"action_id": action.id, "capability": definition.name, "status": "denied", "summary": "变更前置检查失败，未创建审批。"})
                     else:
@@ -832,21 +812,6 @@ class OpsAgentGraph:
         }
         message = messages.get(str(error_code))
         return (str(error_code), message) if message else None
-
-    @staticmethod
-    def _limit_answer(state: AgentState, reason: str) -> str:
-        settings = get_settings()
-        evidence = state.get("evidence", [])
-        if evidence:
-            lines = [f"- {item.get('summary', '已完成一步调查')}" for item in evidence[-6:]]
-            if reason == "tool_calls":
-                heading = f"本次调查已达到 {settings.agent_max_tool_calls} 次工具调用上限。当前已取得的信息："
-            else:
-                heading = "本次调查的内部处理流程达到安全上限。当前已取得的信息："
-            return heading + "\n\n" + "\n".join(lines) + "\n\n系统已停止继续调用工具，并根据现有证据结束本次回答。"
-        if reason == "tool_calls":
-            return f"本次调查已达到 {settings.agent_max_tool_calls} 次工具调用上限，但尚未取得可用于回答的证据。"
-        return "本次调查的内部处理流程达到安全上限，但尚未取得可用于回答的证据。"
 
     @staticmethod
     def _verification_satisfied(action: Action, observation: dict) -> bool:

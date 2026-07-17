@@ -23,7 +23,7 @@ from app.models.action import Action, Approval
 from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.governance import AgentWorker, AuditEvent
-from app.models.project import Environment, Project, ProjectMember
+from app.models.project import Connection, Environment, Project, ProjectMember
 from app.models.user import User
 from app.services.seed_service import seed_initial_data
 from app.version import APP_VERSION
@@ -112,12 +112,6 @@ def test_llm_placeholder_key_is_not_reported_as_configured():
     assert configured.llm_configured is True
 
 
-def test_default_agent_budget_allows_fifty_tool_calls():
-    settings = Settings(_env_file=None)
-    assert settings.agent_max_tool_calls == 50
-    assert settings.agent_max_steps == 120
-
-
 def test_production_requires_api_key_for_any_provider_label():
     with pytest.raises(ValueError, match="LLM API key"):
         Settings(
@@ -163,6 +157,40 @@ def test_environment_api_enforces_schema_and_single_default(client: TestClient):
     assert client.delete(f"/api/environments/{remaining['id']}", headers=headers).status_code == 409
 
 
+def test_environment_monitoring_controls_are_independent_and_disabled_by_default(client: TestClient):
+    user = create_user(role="admin")
+    headers = bearer(user)
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": f"monitoring-{uuid4().hex[:8]}"},
+    ).json()
+    environment = client.get(
+        f"/api/projects/{project['id']}/environments",
+        headers=headers,
+    ).json()[0]
+    assert environment["monitoring_enabled"] is False
+    assert environment["auto_remediation_enabled"] is False
+
+    enabled = client.patch(
+        f"/api/environments/{environment['id']}",
+        headers=headers,
+        json={"monitoring_enabled": True, "auto_remediation_enabled": True},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["monitoring_enabled"] is True
+    assert enabled.json()["auto_remediation_enabled"] is True
+
+    monitoring_stopped = client.patch(
+        f"/api/environments/{environment['id']}",
+        headers=headers,
+        json={"monitoring_enabled": False},
+    )
+    assert monitoring_stopped.status_code == 200
+    assert monitoring_stopped.json()["monitoring_enabled"] is False
+    assert monitoring_stopped.json()["auto_remediation_enabled"] is True
+
+
 def test_connection_reference_is_redacted_and_cannot_be_deleted_while_in_use(client: TestClient):
     user = create_user(role="admin")
     headers = bearer(user)
@@ -205,6 +233,36 @@ def test_connection_reference_is_redacted_and_cannot_be_deleted_while_in_use(cli
         json={"connection_id": None},
     ).status_code == 200
     assert client.delete(f"/api/connections/{connection_payload['id']}", headers=headers).status_code == 200
+
+
+def test_project_connection_list_is_scoped_to_referenced_connections(client: TestClient):
+    user = create_user(role="admin")
+    headers = bearer(user)
+    first_project = client.post("/api/projects", headers=headers, json={"name": f"first-{uuid4().hex[:8]}"}).json()
+    second_project = client.post("/api/projects", headers=headers, json={"name": f"second-{uuid4().hex[:8]}"}).json()
+    first_connection = client.post("/api/connections", headers=headers, json={"name": "first-ssh", "host": "host-a", "port": 22, "username": "opsagent", "credential_ref": "/run/secrets/first", "host_fingerprint": "SHA256:first"}).json()
+    second_connection = client.post("/api/connections", headers=headers, json={"name": "second-ssh", "host": "host-b", "port": 22, "username": "opsagent", "credential_ref": "/run/secrets/second", "host_fingerprint": "SHA256:second"}).json()
+    for project, connection in ((first_project, first_connection), (second_project, second_connection)):
+        environment = client.get(f"/api/projects/{project['id']}/environments", headers=headers).json()[0]
+        response = client.patch(f"/api/environments/{environment['id']}", headers=headers, json={"runtime_type": "docker_compose", "connection_id": connection["id"], "workdir": "/srv/project", "config_json": {"compose_file": "docker-compose.yml"}})
+        assert response.status_code == 200
+    scoped = client.get(f"/api/connections?project_id={first_project['id']}", headers=headers)
+    assert scoped.status_code == 200
+    assert [item["id"] for item in scoped.json()] == [first_connection["id"]]
+    assert {item["id"] for item in client.get("/api/connections", headers=headers).json()} == {first_connection["id"], second_connection["id"]}
+
+
+def test_system_monitor_session_is_not_exposed_as_user_chat(client: TestClient):
+    user = create_user(role="admin")
+    headers = bearer(user)
+    project = client.post("/api/projects", headers=headers, json={"name": f"system-chat-{uuid4().hex[:8]}"}).json()
+    environment = client.get(f"/api/projects/{project['id']}/environments", headers=headers).json()[0]
+    with SessionLocal() as db:
+        db.add(ChatSession(project_id=project["id"], environment_id=environment["id"], user_id=user.id, title="主动巡检", status="system"))
+        db.commit()
+    response = client.get(f"/api/projects/{project['id']}/chat-sessions", headers=headers)
+    assert response.status_code == 200
+    assert all(item["status"] != "system" for item in response.json())
 
 
 def test_approver_membership_is_visible_in_pending_list(client: TestClient):

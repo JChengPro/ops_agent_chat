@@ -12,6 +12,7 @@ from app.context.jobs import claim_collector_run, process_collector_run, recover
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.governance import AgentWorker
+from app.monitoring.service import claim_due_environment, process_environment_monitor
 
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,7 @@ def main() -> None:
             saver.setup()
             agent = OpsAgentGraph(checkpointer=saver)
             last_recovery = 0.0
+            last_monitor_scan = 0.0
             prefer_collector = False
             while not stopping:
                 with SessionLocal() as db:
@@ -50,6 +52,16 @@ def main() -> None:
                         if expired_collectors:
                             logger.warning("Marked %s expired collector runs as failed", expired_collectors)
                         last_recovery = time.monotonic()
+                    monitor_environment_id = None
+                    if time.monotonic() - last_monitor_scan >= 1:
+                        monitor_environment_id = claim_due_environment(db, settings.monitor_interval_seconds)
+                        last_monitor_scan = time.monotonic()
+                    if monitor_environment_id:
+                        try:
+                            process_environment_monitor(db, monitor_environment_id)
+                        except Exception:  # noqa: BLE001
+                            db.rollback()
+                            logger.exception("Active monitoring failed for environment %s", monitor_environment_id)
                     collector_run = claim_collector_run(db, worker_id) if prefer_collector else None
                     run = claim_run(db, worker_id) if collector_run is None else None
                     if run:

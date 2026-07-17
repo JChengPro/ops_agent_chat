@@ -72,6 +72,47 @@ class PolicyEngine:
             )
         return self._deny("UNAPPROVED_CHANGE", "State-changing capability lacks an approval policy", "L3")
 
+    def evaluate_automatic_remediation(
+        self,
+        db: Session,
+        action: Action,
+        capability: CapabilityDefinition,
+        user_id: int,
+    ) -> PolicyResult:
+        """Evaluate the narrow standing authorization granted by an environment owner."""
+        result = self.evaluate(db, action, capability, user_id)
+        environment = db.get(Environment, action.environment_id) if action.environment_id else None
+        automation = (action.resolved_spec_json or {}).get("automation")
+        if result.decision != "require_approval":
+            return result
+        if not isinstance(automation, dict) or automation.get("source") != "active_monitor":
+            return result
+        if not environment or not environment.monitoring_enabled or not environment.auto_remediation_enabled:
+            return self._deny("AUTO_REMEDIATION_DISABLED", "Automatic remediation is disabled", "L3")
+        if environment.policy_profile not in {"development", "test"}:
+            return PolicyResult(
+                "require_approval",
+                result.risk_level,
+                "AUTO_REMEDIATION_REQUIRES_APPROVAL",
+                "Automatic remediation is not allowed by this environment policy profile",
+                result.matched_policies + ["AUTO_REMEDIATION_PROFILE"],
+            )
+        if capability.name != "service.start" or action.arguments_json.get("service") != automation.get("service"):
+            return self._deny(
+                "AUTO_REMEDIATION_CAPABILITY_FORBIDDEN",
+                "Active monitoring may automatically start only the stopped service it observed",
+                "L3",
+            )
+        if not automation.get("precheck_evidence_id"):
+            return self._deny("AUTO_REMEDIATION_PRECHECK_MISSING", "Automatic remediation requires fresh precheck evidence", "L3")
+        return PolicyResult(
+            "allow",
+            result.risk_level,
+            "OWNER_ENABLED_AUTO_REMEDIATION",
+            "The owner enabled bounded automatic remediation for this non-production environment",
+            result.matched_policies + ["ACTIVE_MONITOR", "OWNER_STANDING_AUTHORIZATION"],
+        )
+
     def _service_in_scope(self, db: Session, project_id: int, environment_id: int, service: str) -> bool:
         return db.scalar(
             select(ProjectEntity.id).where(
