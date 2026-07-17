@@ -525,8 +525,16 @@ def test_batch_approval_is_atomic_and_resumes_run_once(client: TestClient):
     assert {item["decision"] for item in approved.json()["approvals"]} == {"approved", "rejected"}
     assert approved.json()["run_summary"]["status"] == "queued"
     with SessionLocal() as db:
-        decisions = dict(db.execute(select(Approval.id, Approval.decision).join(Action).where(Action.run_id == run_id)))
-        action_statuses = dict(db.execute(select(Approval.id, Action.status).join(Action).where(Action.run_id == run_id)))
+        decisions = dict(
+            db.execute(
+                select(Approval.id, Approval.decision).join(Action).where(Action.run_id == run_id)
+            ).all()
+        )
+        action_statuses = dict(
+            db.execute(
+                select(Approval.id, Action.status).join(Action).where(Action.run_id == run_id)
+            ).all()
+        )
         assert decisions[selected_id] == "approved"
         assert action_statuses[selected_id] == "approved"
         assert {value for key, value in decisions.items() if key != selected_id} == {"rejected"}
