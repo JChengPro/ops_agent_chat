@@ -1,4 +1,4 @@
-import type { Action, Approval, ChatMessage, Evidence } from "./api/types";
+import type { Action, Approval, ChatMessage, Evidence, MonitorEvent } from "./api/types";
 
 const POLLING_TERMINAL_STATES = new Set(["completed", "failed", "cancelled", "waiting_for_approval"]);
 
@@ -8,6 +8,39 @@ export function isRunPollingTerminal(status: string): boolean {
 
 export function shouldApplySessionResult(currentSessionId: number | null, targetSessionId: number): boolean {
   return currentSessionId === targetSessionId;
+}
+
+export type MonitorNotice = {kind: "success" | "error" | "info"; text: string};
+
+export function monitorEventSnapshot(item: MonitorEvent): string {
+  return [
+    item.status,
+    item.summary,
+    item.diagnostic_run_status || "",
+    item.diagnosed_at || "",
+  ].join(":");
+}
+
+export function shouldNotifyMonitorEvent(item: MonitorEvent, previousSnapshot: string | undefined, initialized: boolean): boolean {
+  const snapshot = monitorEventSnapshot(item);
+  if (previousSnapshot === snapshot) return false;
+  if (initialized) return true;
+  return item.status !== "resolved";
+}
+
+export function monitorNoticeFor(item: MonitorEvent): MonitorNotice {
+  if (item.diagnosis_summary) {
+    return item.diagnostic_run_status === "completed"
+      ? {kind: "info", text: `自动只读诊断已完成：${item.summary}`}
+      : {kind: "error", text: `自动只读诊断未成功：${item.summary}`};
+  }
+  if (item.diagnostic_run_status === "queued" || item.diagnostic_run_status === "running") {
+    return {kind: "info", text: `${item.summary}；自动只读诊断正在收集状态和日志`};
+  }
+  if (item.status === "resolved") return {kind: "success", text: item.summary};
+  if (item.status === "remediated") return {kind: "success", text: item.summary};
+  if (item.status === "remediating") return {kind: "info", text: item.summary};
+  return {kind: "error", text: item.summary};
 }
 
 export function markApprovalDecision(rows: ChatMessage[], approvalId: string, decision: string): ChatMessage[] {

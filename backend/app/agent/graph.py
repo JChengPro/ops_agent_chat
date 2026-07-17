@@ -587,7 +587,10 @@ class OpsAgentGraph:
         executed_calls = 0
         terminal_error: tuple[str, str] | None = None
         with SessionLocal() as db:
-            actions = list(db.scalars(select(Action).where(Action.id.in_(state.get("action_ids", []))).order_by(Action.created_at)))
+            action_ids = state.get("action_ids", [])
+            action_rows = list(db.scalars(select(Action).where(Action.id.in_(action_ids))))
+            actions_by_id = {item.id: item for item in action_rows}
+            actions = [actions_by_id[action_id] for action_id in action_ids if action_id in actions_by_id]
             for action in actions:
                 run_state = db.get(AgentRun, state["run_id"])
                 if run_state:

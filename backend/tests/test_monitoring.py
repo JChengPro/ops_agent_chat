@@ -75,6 +75,50 @@ class UnhealthyMonitorExecutor(MonitorExecutor):
         }
 
 
+class FailedVerificationThenRecoveredExecutor(MonitorExecutor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_checks = 0
+
+    def execute(self, db, action, capability):
+        del capability
+        self.calls.append(action.capability_name)
+        if action.capability_name == "service.list":
+            self.list_checks += 1
+            running = self.list_checks > 1
+            records = [{
+                "Service": "frontend",
+                "State": "running" if running else "exited",
+                "ExitCode": 0,
+                "Health": "healthy" if running else "",
+            }]
+            result = AdapterResult(
+                "success",
+                "服务状态已读取",
+                {"records": records, "parse_valid": True, "stdout": json.dumps(records)},
+            )
+        elif action.capability_name == "service.status":
+            records = [{"Service": "frontend", "State": "exited", "ExitCode": 0, "Health": ""}]
+            result = AdapterResult(
+                "success",
+                "服务仍未运行",
+                {"records": records, "parse_valid": True, "stdout": json.dumps(records)},
+            )
+        elif action.capability_name == "service.start":
+            result = AdapterResult("success", "服务启动命令已执行", {"stdout": ""})
+        else:
+            raise AssertionError(f"Unexpected capability: {action.capability_name}")
+        evidence = record_result(db, action, "monitor-recovery-test", result)
+        return {
+            "evidence_id": evidence.id,
+            "capability": action.capability_name,
+            "status": result.status,
+            "summary": result.summary,
+            "data": result.data,
+            "error_code": result.error_code,
+        }
+
+
 class DiagnosisExecutor:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -201,6 +245,24 @@ def test_monitor_only_alerts_in_production_even_when_auto_remediation_is_enabled
         assert events[0].remediation_action_id is None
         assert executor.calls == ["service.list"]
         assert db.scalar(select(Action).where(Action.environment_id == environment_id, Action.capability_name == "service.start")) is None
+
+
+def test_failed_remediation_is_resolved_when_the_next_patrol_observes_recovery():
+    environment_id = create_monitored_environment(policy_profile="development", auto_remediation=True)
+    executor = FailedVerificationThenRecoveredExecutor()
+    with SessionLocal() as db:
+        first = process_environment_monitor(db, environment_id, executor=executor)
+        assert len(first) == 1
+        event_id = first[0].id
+        assert first[0].status == "remediation_failed"
+        assert "最终状态验证未通过" in first[0].summary
+
+        assert process_environment_monitor(db, environment_id, executor=executor) == []
+        db.expire_all()
+        recovered = db.get(MonitorEvent, event_id)
+        assert recovered.status == "resolved"
+        assert recovered.summary == "frontend 当前状态已恢复正常"
+        assert recovered.resolved_at is not None
 
 
 def test_disabled_monitor_is_not_claimed_or_processed():

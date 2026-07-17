@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyApprovalBatchResult, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, rollbackDescription, shouldApplySessionResult } from "../src/uiState.ts";
+import { applyApprovalBatchResult, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../src/uiState.ts";
 
 test("run polling stops for approval and terminal states", () => {
   assert.equal(isRunPollingTerminal("queued"), false);
@@ -53,4 +53,30 @@ test("activity labels localize capabilities and historical English evidence", ()
   assert.equal(humanEvidenceSummary({capability_name: "service.logs", summary: "Read backend logs"}), "已读取 backend 服务日志");
   assert.equal(humanEvidenceSummary({capability_name: "host.disk_usage", summary: "Read disk usage"}), "已读取主机磁盘使用情况");
   assert.equal(humanEvidenceSummary({capability_name: "service.status", summary: "已检查 worker 服务状态"}), "已检查 worker 服务状态");
+});
+
+test("monitor notification replaces a failed remediation with the recovered state", () => {
+  const failed = {
+    id: "event-1",
+    status: "remediation_failed",
+    summary: "mysql 已执行自动启动，但最终状态验证未通过",
+    occurrence_count: 1,
+  };
+  const recovered = {
+    ...failed,
+    status: "resolved",
+    summary: "mysql 当前状态已恢复正常",
+    occurrence_count: 2,
+  };
+  const failedSnapshot = monitorEventSnapshot(failed);
+  assert.equal(shouldNotifyMonitorEvent(failed, undefined, false), true);
+  assert.equal(shouldNotifyMonitorEvent(recovered, failedSnapshot, true), true);
+  assert.deepEqual(monitorNoticeFor(recovered), {kind: "success", text: "mysql 当前状态已恢复正常"});
+  assert.equal(shouldNotifyMonitorEvent(recovered, monitorEventSnapshot(recovered), true), false);
+  assert.equal(shouldNotifyMonitorEvent({...recovered, occurrence_count: 3}, monitorEventSnapshot(recovered), true), false);
+});
+
+test("historical resolved monitor events do not open a stale notification on initial load", () => {
+  const recovered = {id: "event-2", status: "resolved", summary: "frontend 当前状态已恢复正常"};
+  assert.equal(shouldNotifyMonitorEvent(recovered, undefined, false), false);
 });
