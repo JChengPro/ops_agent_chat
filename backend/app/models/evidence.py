@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, JSON, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -42,7 +42,12 @@ class EvidenceClaim(Base):
 
 class EvidenceClaimLink(Base):
     __tablename__ = "evidence_claim_links"
-    __table_args__ = (UniqueConstraint("claim_id", "evidence_id", "context_source_id", "experience_item_id", name="uq_claim_link"),)
+    __table_args__ = (
+        CheckConstraint("num_nonnulls(evidence_id, context_source_id, experience_item_id) = 1", name="ck_claim_link_exactly_one_source"),
+        Index("uq_claim_runtime_evidence", "claim_id", "evidence_id", unique=True, postgresql_where=text("evidence_id IS NOT NULL")),
+        Index("uq_claim_context_source", "claim_id", "context_source_id", unique=True, postgresql_where=text("context_source_id IS NOT NULL")),
+        Index("uq_claim_experience_item", "claim_id", "experience_item_id", unique=True, postgresql_where=text("experience_item_id IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     claim_id: Mapped[int] = mapped_column(ForeignKey("evidence_claims.id", ondelete="CASCADE"), index=True)

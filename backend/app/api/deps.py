@@ -34,7 +34,7 @@ def require_project_permission(db: Session, user: User, project_id: int, permiss
 
 def require_environment(db: Session, user: User, environment_id: int) -> Environment:
     environment = db.get(Environment, environment_id)
-    if not environment:
+    if not environment or not environment.is_active:
         raise HTTPException(status_code=404, detail="Environment not found")
     require_project(db, user, environment.project_id)
     return environment

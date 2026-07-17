@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isRunPollingTerminal, markApprovalDecision, rollbackDescription, shouldApplySessionResult } from "../src/uiState.ts";
+import { applyApprovalBatchResult, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, rollbackDescription, shouldApplySessionResult } from "../src/uiState.ts";
 
 test("run polling stops for approval and terminal states", () => {
   assert.equal(isRunPollingTerminal("queued"), false);
@@ -21,6 +21,20 @@ test("optimistic approval update only changes the selected approval", () => {
   assert.equal(updated[0].metadata_json.approvals[1].decision, "approved");
 });
 
+test("batch approval acknowledgement updates every returned approval and the run state", () => {
+  const rows = [{
+    id: 1, session_id: 1, project_id: 1, role: "assistant", content: "confirm", message_type: "approval",
+    metadata_json: {run_status: "waiting_for_approval", approvals: [{id: "a", decision: "pending"}, {id: "b", decision: "pending"}]},
+  }, {
+    id: 2, session_id: 1, project_id: 1, role: "assistant", content: "older", message_type: "text",
+    metadata_json: {approvals: [{id: "other", decision: "pending"}]},
+  }];
+  const updated = applyApprovalBatchResult(rows, [{id: "a", decision: "approved"}, {id: "b", decision: "approved"}], "queued");
+  assert.equal(updated[0].metadata_json.run_status, "queued");
+  assert.deepEqual(updated[0].metadata_json.approvals.map(item => item.decision), ["approved", "approved"]);
+  assert.equal(updated[1], rows[1]);
+});
+
 test("approval recovery text reflects the immutable rollback snapshot", () => {
   assert.equal(rollbackDescription({rollback_spec_json: {kind: "config_backup"}}), "恢复变更前的配置文件");
   assert.equal(rollbackDescription({rollback_spec_json: {kind: "capability", capability: "service.start"}}), "重新启动服务");
@@ -30,4 +44,12 @@ test("late polling results cannot replace a newly selected session", () => {
   assert.equal(shouldApplySessionResult(12, 12), true);
   assert.equal(shouldApplySessionResult(13, 12), false);
   assert.equal(shouldApplySessionResult(null, 12), false);
+});
+
+test("activity labels localize capabilities and historical English evidence", () => {
+  assert.equal(humanCapability("host.memory_usage"), "检查内存使用情况");
+  assert.equal(humanCapability("service.list"), "列出服务状态");
+  assert.equal(humanEvidenceSummary({capability_name: "service.logs", summary: "Read backend logs"}), "已读取 backend 服务日志");
+  assert.equal(humanEvidenceSummary({capability_name: "host.disk_usage", summary: "Read disk usage"}), "已读取主机磁盘使用情况");
+  assert.equal(humanEvidenceSummary({capability_name: "service.status", summary: "已检查 worker 服务状态"}), "已检查 worker 服务状态");
 });

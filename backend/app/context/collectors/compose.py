@@ -6,6 +6,8 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.context.collectors.base import begin_collector_run
+from app.context.cancellation import collector_cancelled
 from app.context.service import upsert_entity, upsert_relationship
 from app.models.context import CollectorRun, ContextSource
 from app.models.project import Connection, Environment
@@ -19,13 +21,16 @@ class DockerComposeCollector:
     def __init__(self, transport: SSHTransport | None = None) -> None:
         self.transport = transport or SSHTransport()
 
-    def collect(self, db: Session, environment: Environment, connection: Connection) -> CollectorRun:
-        run = CollectorRun(project_id=environment.project_id, environment_id=environment.id, collector_name=self.name, status="running")
-        db.add(run)
-        db.flush()
+    def collect(self, db: Session, environment: Environment, connection: Connection, run: CollectorRun | None = None) -> CollectorRun:
+        run = begin_collector_run(db, environment, self.name, run)
         compose_file = str(environment.config_json.get("compose_file") or "docker-compose.yml")
         try:
-            content = self.transport.read_file(connection, environment, compose_file)
+            content = self.transport.read_file(
+                connection,
+                environment,
+                compose_file,
+                cancel_check=lambda: collector_cancelled(run.id),
+            )
             payload = yaml.safe_load(content) or {}
             services = payload.get("services") or {}
             if not isinstance(services, dict):
@@ -95,12 +100,9 @@ class DockerComposeCollector:
                         relation_type="DEPENDS_ON",
                     )
                     relationship_count += 1
-            run.status = "success"
-            run.finished_at = now
             run.summary_json = {"entities": len(entities), "relationships": relationship_count, "source": compose_file}
+            run.error_message = None
         except Exception as exc:  # noqa: BLE001
-            run.status = "failed"
-            run.finished_at = datetime.now(timezone.utc)
             run.error_message = str(exc)
         db.flush()
         return run

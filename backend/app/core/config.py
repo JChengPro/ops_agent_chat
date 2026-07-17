@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str = Field(default="high", alias="LLM_REASONING_EFFORT")
     llm_thinking_enabled: bool = Field(default=True, alias="LLM_THINKING_ENABLED")
     llm_timeout_seconds: int = Field(default=90, alias="LLM_TIMEOUT_SECONDS")
-    agent_max_steps: int = Field(default=6, alias="AGENT_MAX_STEPS")
-    agent_max_tool_calls: int = Field(default=8, alias="AGENT_MAX_TOOL_CALLS")
+    agent_max_steps: int = Field(default=120, alias="AGENT_MAX_STEPS")
+    agent_max_tool_calls: int = Field(default=50, alias="AGENT_MAX_TOOL_CALLS")
     agent_timeout_seconds: int = Field(default=300, alias="AGENT_TIMEOUT_SECONDS")
     agent_context_max_chars: int = Field(default=60000, alias="AGENT_CONTEXT_MAX_CHARS")
 
@@ -57,8 +57,8 @@ class Settings(BaseSettings):
                 problems.append("DATABASE_URL must not use the development password")
             if not self.ssh_strict_host_key_checking:
                 problems.append("SSH_STRICT_HOST_KEY_CHECKING must be enabled")
-            if self.llm_provider == "deepseek" and not self.deepseek_api_key:
-                problems.append("DEEPSEEK_API_KEY must be configured")
+            if not self.llm_configured:
+                problems.append("The OpenAI-compatible LLM API key must be configured")
             if problems:
                 raise ValueError("Unsafe production configuration: " + "; ".join(problems))
         return self
@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     @property
     def checkpoint_database_url(self) -> str:
         return self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+
+    @property
+    def llm_configured(self) -> bool:
+        value = self.deepseek_api_key.strip()
+        return bool(value and value not in {"replace-with-your-deepseek-api-key", "replace-with-api-key", "your-api-key"})
 
 
 @lru_cache

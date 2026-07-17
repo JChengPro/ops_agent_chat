@@ -37,6 +37,7 @@ def query_project_context(db: Session, project_id: int, environment_id: int, que
         )
     return {
         "entities": [entity_to_dict(item) for item in entities],
+        "source_ids": sorted({item.source_id for item in entities if item.source_id is not None}),
         "source": "project_context",
         "observed_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -72,6 +73,7 @@ def query_relationships(
         cast(array([literal(start.id, String), target_column]), ARRAY(String(36))).label("entity_path"),
         cast(array([relation.c.relation_type]), ARRAY(String(60))).label("relation_path"),
         literal(1).label("depth"),
+        relation.c.source_id.label("source_id"),
     ).where(
         relation.c.project_id == project_id,
         relation.c.environment_id == environment_id,
@@ -84,6 +86,7 @@ def query_relationships(
         cast(traversal.c.entity_path + array([target_column]), ARRAY(String(36))),
         cast(traversal.c.relation_path + array([relation.c.relation_type]), ARRAY(String(60))),
         traversal.c.depth + 1,
+        relation.c.source_id,
     ).where(
         relation.c.project_id == project_id,
         relation.c.environment_id == environment_id,
@@ -94,10 +97,20 @@ def query_relationships(
     )
     traversal = traversal.union_all(recursive)
     paths: list[dict[str, Any]] = []
-    for entity_path, relation_path, level in db.execute(select(traversal.c.entity_path, traversal.c.relation_path, traversal.c.depth)).all():
+    source_ids: set[int] = set()
+    for entity_path, relation_path, level, source_id in db.execute(
+        select(traversal.c.entity_path, traversal.c.relation_path, traversal.c.depth, traversal.c.source_id)
+    ).all():
         names = [by_id[entity_id].canonical_name for entity_id in entity_path if entity_id in by_id]
         paths.append({"path": names, "relations": relation_path, "depth": level})
-    return {"entity": entity_name, "paths": paths, "direction": "impact" if reverse else "dependencies"}
+        if source_id is not None:
+            source_ids.add(source_id)
+    return {
+        "entity": entity_name,
+        "paths": paths,
+        "source_ids": sorted(source_ids),
+        "direction": "impact" if reverse else "dependencies",
+    }
 
 
 def upsert_entity(

@@ -3,15 +3,15 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.context.collectors.base import begin_collector_run
 from app.context.service import upsert_entity, upsert_relationship
 from app.models.context import CollectorRun, ContextSource
 from app.models.project import Environment
 
 
-def collect_manual_services(db: Session, environment: Environment) -> CollectorRun:
-    run = CollectorRun(project_id=environment.project_id, environment_id=environment.id, collector_name="manual", status="running")
-    db.add(run)
-    db.flush()
+def collect_manual_services(db: Session, environment: Environment, run: CollectorRun | None = None) -> CollectorRun:
+    standalone = run is None
+    run = begin_collector_run(db, environment, "manual", run)
     source = db.scalar(
         select(ContextSource).where(
             ContextSource.project_id == environment.project_id,
@@ -56,8 +56,10 @@ def collect_manual_services(db: Session, environment: Environment) -> CollectorR
             continue
         upsert_relationship(db, project_id=environment.project_id, environment_id=environment.id, source_id=source.id, from_entity_id=entities[raw["from"]].id, to_entity_id=entities[raw["to"]].id, relation_type=str(raw.get("type") or "DEPENDS_ON"))
         relationship_count += 1
-    run.status = "success"
-    run.finished_at = now
+    if standalone:
+        run.status = "completed"
+        run.finished_at = now
+    run.error_message = None
     run.summary_json = {"entities": len(entities), "relationships": relationship_count}
     db.flush()
     return run

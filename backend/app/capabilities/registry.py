@@ -40,6 +40,10 @@ class CapabilityRegistry:
                     raise ValueError(f"Duplicate capability: {definition.name}")
                 self._definitions[definition.name] = definition
         self._compile()
+        self._definition_hashes = {
+            (definition.name, definition.version): self.hash_definition(definition)
+            for definition in self._definitions.values()
+        }
 
     def _compile(self) -> None:
         for definition in self._definitions.values():
@@ -78,8 +82,62 @@ class CapabilityRegistry:
                 if relation and not set(definition.runtimes).issubset(self._definitions[relation].runtimes):
                     raise ValueError(f"Capability {definition.name} relation {relation} does not support all required runtimes")
 
-    def get(self, name: str) -> CapabilityDefinition | None:
-        return self._definitions.get(name)
+    @staticmethod
+    def hash_definition(definition: CapabilityDefinition) -> str:
+        canonical = json.dumps(asdict(definition), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def get(self, name: str, version: str | None = None) -> CapabilityDefinition | None:
+        definition = self._definitions.get(name)
+        if definition is None or (version is not None and definition.version != version):
+            return None
+        return definition
+
+    def definition_hash(self, name: str, version: str) -> str | None:
+        return self._definition_hashes.get((name, version))
+
+    def binding(self, definition: CapabilityDefinition) -> dict[str, str]:
+        digest = self.definition_hash(definition.name, definition.version)
+        if not digest or self.hash_definition(definition) != digest:
+            raise ValueError(f"Capability definition is not registered: {definition.name}@{definition.version}")
+        return {"name": definition.name, "version": definition.version, "definition_hash": digest}
+
+    def get_bound(self, name: str, version: str, definition_hash: str) -> CapabilityDefinition | None:
+        definition = self.get(name, version)
+        if (
+            definition is None
+            or self.definition_hash(name, version) != definition_hash
+            or self.hash_definition(definition) != definition_hash
+        ):
+            return None
+        return definition
+
+    def get_from_binding(self, binding: object) -> CapabilityDefinition | None:
+        if not isinstance(binding, dict):
+            return None
+        return self.get_bound(
+            str(binding.get("name") or ""),
+            str(binding.get("version") or ""),
+            str(binding.get("definition_hash") or ""),
+        )
+
+    def bindings_available(self, bindings: object) -> bool:
+        return bool(
+            isinstance(bindings, dict)
+            and bindings
+            and all(self.get_from_binding(binding) is not None for binding in bindings.values())
+        )
+
+    def related_bindings(self, definition: CapabilityDefinition) -> dict[str, dict[str, str]]:
+        bindings = {"action": self.binding(definition)}
+        for relation in ("precheck", "verifier", "rollback"):
+            related_name = getattr(definition, relation)
+            if related_name:
+                related = self.get(related_name)
+                if not related:
+                    raise ValueError(f"Capability {definition.name} references missing {relation}: {related_name}")
+                bindings[relation] = self.binding(related)
+        return bindings
 
     def resolve(self, runtime_type: str | None, permissions: set[str]) -> list[CapabilityDefinition]:
         if not runtime_type:
@@ -92,8 +150,7 @@ class CapabilityRegistry:
 
     def sync_versions(self, db: Session) -> None:
         for definition in self._definitions.values():
-            canonical = json.dumps(asdict(definition), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-            digest = hashlib.sha256(canonical.encode()).hexdigest()
+            digest = self.hash_definition(definition)
             row = db.scalar(
                 select(CapabilityVersion).where(
                     CapabilityVersion.name == definition.name,

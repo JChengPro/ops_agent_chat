@@ -42,10 +42,19 @@ jobs:
       - name: Compile capability registry
         working-directory: backend
         run: python -c "from app.capabilities.registry import CapabilityRegistry; CapabilityRegistry()"
+      - name: Backend static checks
+        run: ruff check --select E9,F63,F7,F82 backend/app backend/tests
+      - name: Security module type checks
+        run: mypy --ignore-missing-imports --follow-imports=skip backend/app/runtime/verification.py backend/app/policy/action_hash.py
       - name: Migration round trip
         run: PYTHONPATH=backend python backend/scripts/check_migrations.py
       - name: Backend tests
-        run: PYTHONPATH=backend pytest -q backend/tests
+        run: PYTHONPATH=backend pytest -q --cov=app --cov-report=term-missing --cov-report=xml backend/tests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: coverage.xml
 
   frontend:
     runs-on: ubuntu-latest

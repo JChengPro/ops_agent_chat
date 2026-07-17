@@ -1,5 +1,5 @@
 import { apiFetch, setToken } from "./client";
-import type { Action, AgentRun, AgentStep, Approval, ApprovalDecisionResponse, ChatMessage, ChatSession, Entity, Environment, Evidence, ExperienceItem, Project, User } from "./types";
+import type { Action, AgentRun, AgentStep, Approval, ApprovalBatchDecisionResponse, ApprovalDecisionResponse, ChatMessage, ChatSession, CollectorRun, Connection, ConnectionPayload, Entity, Environment, EnvironmentPayload, Evidence, ExperienceItem, Project, User } from "./types";
 
 export async function login(username: string, password: string): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/login", {method:"POST",body:JSON.stringify({username,password})}); setToken(data.access_token); return data.user; }
 export const logout = () => apiFetch<void>("/api/auth/logout",{method:"POST"});
@@ -9,15 +9,25 @@ export const createProject = (payload:{name:string;description?:string}) => apiF
 export const updateProject = (id:number,payload:Partial<Project>) => apiFetch<Project>(`/api/projects/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
 export const deleteProject = (id:number) => apiFetch<Project>(`/api/projects/${id}`,{method:"DELETE"});
 export const listEnvironments = (id:number) => apiFetch<Environment[]>(`/api/projects/${id}/environments`);
-export const collectContext = (id:number) => apiFetch<unknown[]>(`/api/environments/${id}/collect-context`,{method:"POST"});
-export const listEntities = (id:number) => apiFetch<Entity[]>(`/api/projects/${id}/entities`);
+export const createEnvironment = (projectId:number,payload:EnvironmentPayload) => apiFetch<Environment>(`/api/projects/${projectId}/environments`,{method:"POST",body:JSON.stringify(payload)});
+export const updateEnvironment = (id:number,payload:Partial<EnvironmentPayload>) => apiFetch<Environment>(`/api/environments/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
+export const deleteEnvironment = (id:number) => apiFetch<Environment>(`/api/environments/${id}`,{method:"DELETE"});
+export const testEnvironmentConnection = (id:number) => apiFetch<{ok:boolean;message:string}>(`/api/environments/${id}/test-connection`,{method:"POST"});
+export const listConnections = () => apiFetch<Connection[]>("/api/connections");
+export const createConnection = (payload:ConnectionPayload) => apiFetch<Connection>("/api/connections",{method:"POST",body:JSON.stringify(payload)});
+export const updateConnection = (id:number,payload:Partial<ConnectionPayload>) => apiFetch<Connection>(`/api/connections/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
+export const deleteConnection = (id:number) => apiFetch<{deleted:boolean;id:number}>(`/api/connections/${id}`,{method:"DELETE"});
+export const collectContext = (id:number) => apiFetch<CollectorRun[]>(`/api/environments/${id}/collect-context`,{method:"POST"});
+export const listCollectorRuns = (id:number) => apiFetch<CollectorRun[]>(`/api/environments/${id}/collector-runs`);
+export const cancelCollectorRun = (id:number) => apiFetch<CollectorRun>(`/api/collector-runs/${id}/cancel`,{method:"POST"});
+export const listEntities = (id:number,environmentId?:number) => apiFetch<Entity[]>(`/api/projects/${id}/entities${environmentId?`?environment_id=${environmentId}`:""}`);
 export const listSessions = (id:number) => apiFetch<ChatSession[]>(`/api/projects/${id}/chat-sessions`);
 export const listGeneralSessions = () => apiFetch<ChatSession[]>("/api/chat-sessions");
-export const createSession = (id:number|null,title="新会话") => apiFetch<ChatSession>(id===null?"/api/chat-sessions":`/api/projects/${id}/chat-sessions`,{method:"POST",body:JSON.stringify({title})});
+export const createSession = (id:number|null,title="新会话",environmentId?:number) => apiFetch<ChatSession>(id===null?"/api/chat-sessions":`/api/projects/${id}/chat-sessions`,{method:"POST",body:JSON.stringify({title,environment_id:environmentId})});
 export const updateSession = (id:number,payload:Partial<ChatSession>) => apiFetch<ChatSession>(`/api/chat-sessions/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
 export const deleteSession = (id:number) => apiFetch<ChatSession>(`/api/chat-sessions/${id}`,{method:"DELETE"});
 export const listMessages = (id:number) => apiFetch<ChatMessage[]>(`/api/chat-sessions/${id}/messages`);
-export const queueMessage = (id:number,content:string) => apiFetch<{user_message:ChatMessage;run_summary:AgentRun}>(`/api/chat-sessions/${id}/agent-runs`,{method:"POST",body:JSON.stringify({content})});
+export const queueMessage = (id:number,content:string,clientRequestId:string) => apiFetch<{user_message:ChatMessage;run_summary:AgentRun;replayed:boolean}>(`/api/chat-sessions/${id}/agent-runs`,{method:"POST",body:JSON.stringify({content,client_request_id:clientRequestId})});
 export const getRun = (id:string) => apiFetch<AgentRun>(`/api/agent-runs/${id}`);
 export const cancelRun = (id:string) => apiFetch<AgentRun>(`/api/agent-runs/${id}/cancel`,{method:"POST"});
 export const listRuns = (projectId:number,sessionId?:number) => apiFetch<AgentRun[]>(`/api/projects/${projectId}/agent-runs${sessionId?`?session_id=${sessionId}`:""}`);
@@ -26,6 +36,7 @@ export const listActions = (runId:string) => apiFetch<Action[]>(`/api/agent-runs
 export const listSteps = (runId:string) => apiFetch<AgentStep[]>(`/api/agent-runs/${runId}/steps`);
 export const listEvidence = (runId:string) => apiFetch<Evidence[]>(`/api/agent-runs/${runId}/evidence`);
 export const decideApproval = (approval:Approval,decision:"approve"|"reject",comment?:string) => apiFetch<ApprovalDecisionResponse>(`/api/approvals/${approval.id}/${decision}`,{method:"POST",body:JSON.stringify({action_hash:approval.action_hash,comment})});
+export const decideApprovalBatch = (runId:string,approvals:Approval[],decision:"approve"|"reject",comment?:string) => apiFetch<ApprovalBatchDecisionResponse>(`/api/agent-runs/${runId}/approvals/${decision}`,{method:"POST",body:JSON.stringify({approvals:approvals.map(item=>({approval_id:item.id,action_hash:item.action_hash})),comment})});
 export const listExperience = (id:number) => apiFetch<ExperienceItem[]>(`/api/projects/${id}/experience`);
 export const createExperience = (id:number,payload:{title:string;content:string;trust_status:string;tags:string[]}) => apiFetch<ExperienceItem>(`/api/projects/${id}/experience`,{method:"POST",body:JSON.stringify(payload)});
 export const updateExperience = (id:number,payload:Partial<ExperienceItem>) => apiFetch<ExperienceItem>(`/api/experience/${id}`,{method:"PATCH",body:JSON.stringify(payload)});

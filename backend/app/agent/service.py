@@ -5,33 +5,47 @@ import socket
 from uuid import uuid4
 
 from langgraph.types import Command
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session
 
 from app.models.action import Action, Approval
 from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.evidence import EvidenceClaim, EvidenceClaimLink, RuntimeEvidence
-from app.capabilities.registry import registry
 from app.audit.service import append_audit_event
+from app.agent.status import TERMINAL_RUN_STATUSES, cancel_unstarted_actions, mark_executing_actions_unknown
+from app.core.config import get_settings
 from app.utils.public_config import public_config
 
 logger = logging.getLogger(__name__)
-TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 WORKER_LEASE_EXPIRED_ANSWER = (
     "处理任务的 Worker 心跳已超时。系统为避免重复执行变更，没有自动重放任务，"
     "也没有采用可能晚到的执行结果；请确认目标当前状态后重新发起。"
 )
 
 
-def create_run(db: Session, session: ChatSession, user_id: int, content: str) -> dict:
+def create_run(db: Session, session: ChatSession, user_id: int, content: str, client_request_id: str | None = None) -> dict:
+    if client_request_id:
+        lock_key = f"agent-run:{user_id}:{session.id}:{client_request_id}"
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": lock_key})
+        existing = db.scalar(
+            select(AgentRun).where(
+                AgentRun.user_id == user_id,
+                AgentRun.session_id == session.id,
+                AgentRun.client_request_id == client_request_id,
+            )
+        )
+        if existing:
+            user_message = db.get(ChatMessage, existing.user_message_id)
+            return {"user_message": message_out(user_message), "run_summary": run_out(existing), "replayed": True}
     user_message = ChatMessage(session_id=session.id, project_id=session.project_id, role="user", content=content)
     db.add(user_message); db.flush()
     if session.title in {"New chat", "新会话"}:
         session.title = content.strip()[:80] or session.title
     run = AgentRun(
         id=str(uuid4()), session_id=session.id, user_message_id=user_message.id, user_id=user_id,
-        project_id=session.project_id, environment_id=session.environment_id, status="queued", current_step="queued_new",
+        project_id=session.project_id, environment_id=session.environment_id, client_request_id=client_request_id,
+        status="queued", current_step="queued_new",
         started_at=None,
     )
     db.add(run); db.flush()
@@ -47,7 +61,7 @@ def create_run(db: Session, session: ChatSession, user_id: int, content: str) ->
     )
     db.commit()
     db.refresh(run)
-    return {"user_message": message_out(user_message), "run_summary": run_out(run)}
+    return {"user_message": message_out(user_message), "run_summary": run_out(run), "replayed": False}
 
 
 def execute_run(db: Session, agent, run: AgentRun) -> dict:
@@ -61,13 +75,23 @@ def execute_run(db: Session, agent, run: AgentRun) -> dict:
         "project_id": session.project_id, "environment_id": session.environment_id,
         "question": user_message.content, "history": [{"role": item.role, "content": item.content} for item in reversed(history_rows)],
     }
-    result = agent.graph.invoke(initial, config={"configurable": {"thread_id": run.id}})
+    result = agent.graph.invoke(initial, config=_graph_config(run.id))
     return _persist_result(db, run, result)
 
 
 def resume_run(db: Session, agent, run: AgentRun) -> dict:
-    result = agent.graph.invoke(Command(resume={"approved": True}), config={"configurable": {"thread_id": run.id}})
+    result = agent.graph.invoke(Command(resume={"approved": True}), config=_graph_config(run.id))
     return _persist_result(db, run, result)
+
+
+def _graph_config(run_id: str) -> dict:
+    settings = get_settings()
+    recursion_limit = max(
+        25,
+        settings.agent_max_steps * 2 + 20,
+        settings.agent_max_tool_calls * 4 + 20,
+    )
+    return {"configurable": {"thread_id": run_id}, "recursion_limit": recursion_limit}
 
 
 def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
@@ -94,13 +118,17 @@ def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
     else:
         content = result.get("answer") or "处理已结束，但没有生成可展示的回答。"
         message_type = "text"
-        approval_payload = []
+        approval_rows = list(db.scalars(select(Approval).join(Action).where(Action.run_id == run.id).order_by(Approval.created_at)))
+        approval_payload = [approval_out(item, db.get(Action, item.action_id)) for item in approval_rows]
         requested_status = result.get("status", "completed")
-        run.status = "cancelled" if run.status == "cancelled" or run.cancel_requested_at else requested_status
+        if run.status not in TERMINAL_RUN_STATUSES:
+            run.status = "cancelled" if run.cancel_requested_at else requested_status
     if run.status in TERMINAL_RUN_STATUSES:
         run.completed_at = run.completed_at or datetime.now(timezone.utc)
     message = db.get(ChatMessage, run.assistant_message_id) if run.assistant_message_id else None
-    evidence_ids = list(db.scalars(select(RuntimeEvidence.id).where(RuntimeEvidence.run_id == run.id).order_by(RuntimeEvidence.created_at)).all())
+    evidence_rows = list(db.scalars(select(RuntimeEvidence).where(RuntimeEvidence.run_id == run.id).order_by(RuntimeEvidence.created_at)).all())
+    evidence_ids = [item.id for item in evidence_rows]
+    context_source_ids, experience_item_ids = _available_source_ids(evidence_rows)
     metadata = {"run_id": run.id, "run_status": run.status, "approvals": approval_payload, "evidence_ids": evidence_ids}
     if message:
         message.content = content; message.message_type = message_type; message.metadata_json = metadata
@@ -108,7 +136,15 @@ def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
         message = ChatMessage(session_id=run.session_id, project_id=run.project_id, role="assistant", content=content, message_type=message_type, metadata_json=metadata)
         db.add(message); db.flush(); run.assistant_message_id = message.id
     db.flush()
-    _persist_claims(db, message.id, content, result.get("claims") or [], evidence_ids)
+    _persist_claims(
+        db,
+        message.id,
+        content,
+        result.get("claims") or [],
+        evidence_ids,
+        context_source_ids=context_source_ids,
+        experience_item_ids=experience_item_ids,
+    )
     append_audit_event(
         db,
         actor_type="agent",
@@ -126,12 +162,23 @@ def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
     return {"assistant_message": message_out(message), "run_summary": run_out(run), "approvals": approval_payload}
 
 
-def _persist_claims(db: Session, message_id: int, content: str, drafts: list[dict], evidence_ids: list[str]) -> None:
+def _persist_claims(
+    db: Session,
+    message_id: int,
+    content: str,
+    drafts: list[dict],
+    evidence_ids: list[str],
+    *,
+    context_source_ids: set[int] | None = None,
+    experience_item_ids: set[int] | None = None,
+) -> None:
     existing = list(db.scalars(select(EvidenceClaim.id).where(EvidenceClaim.message_id == message_id)))
     if existing:
         db.execute(delete(EvidenceClaimLink).where(EvidenceClaimLink.claim_id.in_(existing)))
         db.execute(delete(EvidenceClaim).where(EvidenceClaim.id.in_(existing)))
     available = set(evidence_ids)
+    available_context = context_source_ids or set()
+    available_experience = experience_item_ids or set()
     if not drafts:
         drafts = [{
             "text": content[:10000],
@@ -143,14 +190,44 @@ def _persist_claims(db: Session, message_id: int, content: str, drafts: list[dic
     for draft in drafts[:20]:
         claim_type = str(draft.get("claim_type") or "inference")
         refs = list(dict.fromkeys(item for item in draft.get("evidence_ids", []) if item in available))
+        context_refs = list(dict.fromkeys(item for item in draft.get("context_source_ids", []) if item in available_context))
+        experience_refs = list(dict.fromkeys(item for item in draft.get("experience_item_ids", []) if item in available_experience))
         confidence = min(float(draft.get("confidence", 0.5)), confidence_caps.get(claim_type, 0.6))
-        if claim_type == "fact" and not refs:
+        if claim_type == "fact" and not (refs or context_refs or experience_refs):
             claim_type = "inference"
             confidence = min(confidence, 0.5)
         claim = EvidenceClaim(message_id=message_id, claim_text=str(draft.get("text") or "")[:10000], claim_type=claim_type, confidence=max(0.0, confidence))
         db.add(claim); db.flush()
         for evidence_id in refs:
             db.add(EvidenceClaimLink(claim_id=claim.id, evidence_id=evidence_id))
+        for source_id in context_refs:
+            db.add(EvidenceClaimLink(claim_id=claim.id, context_source_id=source_id))
+        for item_id in experience_refs:
+            db.add(EvidenceClaimLink(claim_id=claim.id, experience_item_id=item_id))
+
+
+def _available_source_ids(evidence_rows: list[RuntimeEvidence]) -> tuple[set[int], set[int]]:
+    context_ids: set[int] = set()
+    experience_ids: set[int] = set()
+    for evidence in evidence_rows:
+        data = evidence.data_json if isinstance(evidence.data_json, dict) else {}
+        if evidence.capability_name in {
+            "project.context.get",
+            "relationship.dependencies",
+            "relationship.impact",
+        }:
+            source_ids = data.get("source_ids")
+            if isinstance(source_ids, list):
+                context_ids.update(item for item in source_ids if isinstance(item, int))
+        elif evidence.capability_name == "experience.search":
+            items = data.get("items")
+            if isinstance(items, list):
+                experience_ids.update(
+                    item["item_id"]
+                    for item in items
+                    if isinstance(item, dict) and isinstance(item.get("item_id"), int)
+                )
+    return context_ids, experience_ids
 
 
 def claim_run(db: Session, worker_id: str, run_id: str | None = None) -> AgentRun | None:
@@ -184,14 +261,38 @@ def process_claimed_run(db: Session, agent, run: AgentRun, worker_id: str) -> di
         failed = db.get(AgentRun, run.id)
         if not failed:
             raise
-        if failed.status != "cancelled":
-            failed.status = "failed"
-            failed.error_code = "RUN_EXECUTION_FAILED"
-            failed.error_message = str(exc)[:2000]
+        claimed = db.scalar(
+            update(AgentRun)
+            .where(
+                AgentRun.id == failed.id,
+                AgentRun.status == "running",
+                AgentRun.lease_owner == worker_id,
+            )
+            .values(
+                status="failed",
+                error_code="RUN_EXECUTION_FAILED",
+                error_message=str(exc)[:2000],
+                completed_at=datetime.now(timezone.utc),
+            )
+            .returning(AgentRun.id)
+        )
+        if claimed:
+            mark_executing_actions_unknown(db, failed.id)
+            cancel_unstarted_actions(db, failed.id)
+            db.flush()
+        else:
+            db.rollback()
+        failed = db.get(AgentRun, run.id)
+        if failed.status == "cancelled":
+            answer = "本次处理已取消。"
+        elif failed.status == "failed":
+            answer = "本次处理执行失败，系统已记录错误并安全结束任务。"
+        else:
+            answer = "本次处理已由其他流程结束，当前 Worker 的晚到异常未被采用。"
         return _persist_result(
             db,
             failed,
-            {"status": failed.status, "answer": "本次处理执行失败，系统已记录错误并安全结束任务。" if failed.status == "failed" else "本次处理已取消。"},
+            {"status": failed.status, "answer": answer},
         )
     finally:
         heartbeat.stop()
@@ -237,6 +338,7 @@ def recover_expired_runs(db: Session) -> int:
             .where(Action.run_id == run.id, Action.status == "executing")
             .values(status="execution_unknown", execution_finished_at=now)
         )
+        cancel_unstarted_actions(db, run.id)
         _persist_result(
             db,
             run,
@@ -292,14 +394,19 @@ def message_out(item: ChatMessage) -> dict:
 
 
 def run_out(item: AgentRun) -> dict:
-    return {"id": item.id, "session_id": item.session_id, "project_id": item.project_id, "environment_id": item.environment_id, "status": item.status, "current_step": item.current_step, "step_count": item.step_count, "request_json": item.request_json, "plan_json": item.plan_json, "error_code": item.error_code, "error_message": item.error_message, "created_at": item.created_at, "completed_at": item.completed_at, "heartbeat_at": item.heartbeat_at, "lease_expires_at": item.lease_expires_at}
+    return {"id": item.id, "session_id": item.session_id, "project_id": item.project_id, "environment_id": item.environment_id, "client_request_id": item.client_request_id, "status": item.status, "current_step": item.current_step, "step_count": item.step_count, "request_json": item.request_json, "plan_json": item.plan_json, "error_code": item.error_code, "error_message": item.error_message, "created_at": item.created_at, "completed_at": item.completed_at, "heartbeat_at": item.heartbeat_at, "lease_expires_at": item.lease_expires_at}
 
 
 def approval_out(item: Approval, action: Action | None) -> dict:
-    return {"id": item.id, "action_id": item.action_id, "action_hash": item.action_hash, "decision": item.decision, "impact_summary": item.impact_summary, "risk_summary": item.risk_summary, "expires_at": item.expires_at.isoformat(), "decided_at": item.decided_at.isoformat() if item.decided_at else None, "action": action_out(action, json_safe=True) if action else None}
+    return {"id": item.id, "action_id": item.action_id, "action_hash": item.action_hash, "decision": item.decision, "reason_code": item.reason_code, "impact_summary": item.impact_summary, "risk_summary": item.risk_summary, "expires_at": item.expires_at.isoformat(), "decided_at": item.decided_at.isoformat() if item.decided_at else None, "consumed_at": item.consumed_at.isoformat() if item.consumed_at else None, "action": action_out(action, json_safe=True) if action else None}
 
 
 def action_out(item: Action, *, json_safe: bool = False) -> dict:
     created_at = item.created_at.isoformat() if json_safe and item.created_at else item.created_at
-    definition = registry.get(item.capability_name)
-    return {"id": item.id, "run_id": item.run_id, "capability_name": item.capability_name, "capability_version": item.capability_version, "project_id": item.project_id, "environment_id": item.environment_id, "target_json": item.target_json, "arguments_json": item.arguments_json, "resolved_spec_json": public_config(item.resolved_spec_json), "rollback_spec_json": public_config(item.rollback_spec_json), "purpose": item.purpose, "effect": item.effect, "action_hash": item.action_hash, "status": item.status, "precheck": definition.precheck if definition else None, "verifier": definition.verifier if definition else None, "rollback": definition.rollback if definition else None, "created_at": created_at}
+    bindings = (item.resolved_spec_json or {}).get("capability_bindings") or {}
+
+    def bound_name(relation: str) -> str | None:
+        binding = bindings.get(relation) if isinstance(bindings, dict) else None
+        return str(binding.get("name")) if isinstance(binding, dict) and binding.get("name") else None
+
+    return {"id": item.id, "run_id": item.run_id, "capability_name": item.capability_name, "capability_version": item.capability_version, "capability_definition_hash": item.capability_definition_hash, "risk_level": item.risk_level, "approval_mode": item.approval_mode, "policy_version": item.policy_version, "config_revision": item.config_revision, "project_id": item.project_id, "environment_id": item.environment_id, "target_json": item.target_json, "arguments_json": item.arguments_json, "resolved_spec_json": public_config(item.resolved_spec_json), "rollback_spec_json": public_config(item.rollback_spec_json), "purpose": item.purpose, "effect": item.effect, "action_hash": item.action_hash, "status": item.status, "precheck": bound_name("precheck"), "verifier": bound_name("verifier"), "rollback": bound_name("rollback"), "created_at": created_at}

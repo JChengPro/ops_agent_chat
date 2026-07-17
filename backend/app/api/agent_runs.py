@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.agent.service import _persist_result, action_out, run_out
+from app.agent.status import close_pending_approval_batch
 from app.audit.service import append_audit_event
 from app.api.deps import require_project
 from app.core.database import get_db
@@ -32,21 +33,52 @@ def get_run(run_id: str, db: Session = Depends(get_db), user: User = Depends(get
 def cancel_run(run_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     run = require_run(db, user, run_id)
     if run.status in {"completed", "failed", "cancelled"}: return run_out(run)
-    run.status = "cancelled"
-    run.cancel_requested_at = datetime.now(timezone.utc)
-    for approval, action in db.execute(select(Approval, Action).join(Action).where(Action.run_id == run.id, Approval.decision == "pending")).all():
-        approval.decision = "rejected"; approval.comment = "Run cancelled"; action.status = "cancelled"
+    now = datetime.now(timezone.utc)
+    claimed = db.scalar(
+        update(AgentRun)
+        .where(AgentRun.id == run.id, AgentRun.status.in_(["created", "queued", "running", "waiting_for_approval"]))
+        .values(status="cancelled", cancel_requested_at=now, completed_at=now)
+        .returning(AgentRun.id)
+    )
+    if not claimed:
+        db.rollback()
+        db.refresh(run)
+        return run_out(run)
+    db.execute(
+        update(Action)
+        .where(
+            Action.run_id == run.id,
+            Action.status.in_(["proposed", "ready", "waiting_for_approval", "approved"]),
+        )
+        .values(status="cancelled", execution_finished_at=now)
+    )
+    db.execute(
+        update(Action)
+        .where(Action.run_id == run.id, Action.status == "executing")
+        .values(status="execution_unknown", execution_finished_at=now)
+    )
+    close_pending_approval_batch(
+        db,
+        run.id,
+        decision="cancelled",
+        reason_code="RUN_CANCELLED",
+        comment="Run cancelled by user",
+        action_status="cancelled",
+        decided_by=user.id,
+    )
     append_audit_event(db, actor_type="user", actor_id=user.id, event_type="run.cancelled", payload={"status": "cancelled"}, project_id=run.project_id, environment_id=run.environment_id, run_id=run.id)
     result = _persist_result(db, run, {"status": "cancelled", "answer": "本次处理已取消。"})
     return result["run_summary"]
 
 
-@router.post("/agent-runs/{run_id}/execute", status_code=status.HTTP_202_ACCEPTED)
-def execute_queued_run(run_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+@router.post("/agent-runs/{run_id}/execute", status_code=status.HTTP_202_ACCEPTED, deprecated=True)
+def execute_queued_run(run_id: str, response: Response, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Compatibility endpoint: execution is exclusively owned by the worker."""
     run = require_run(db, user, run_id)
     if run.status != "queued":
         raise HTTPException(409, "Agent run is not queued")
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
     return run_out(run)
 
 

@@ -31,13 +31,15 @@ class ClaimDraft(BaseModel):
     text: str = Field(min_length=1, max_length=10000)
     claim_type: Literal["fact", "inference", "recommendation", "general_knowledge", "gap"]
     evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+    context_source_ids: list[int] = Field(default_factory=list, max_length=20)
+    experience_item_ids: list[int] = Field(default_factory=list, max_length=20)
     confidence: float = Field(default=0.5, ge=0, le=1)
 
 
 class AgentDecision(BaseModel):
     decision: Literal["respond", "clarify", "invoke_tools", "propose_change"]
     request: RequestUnderstanding
-    tool_calls: list[ToolCallDecision] = Field(default_factory=list, max_length=8)
+    tool_calls: list[ToolCallDecision] = Field(default_factory=list, max_length=50)
     answer: str | None = Field(default=None, max_length=50000)
     clarification_question: str | None = Field(default=None, max_length=4000)
     claims: list[ClaimDraft] = Field(default_factory=list, max_length=20)

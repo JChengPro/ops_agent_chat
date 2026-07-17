@@ -1,4 +1,6 @@
-from uuid import uuid4
+from dataclasses import replace
+
+import pytest
 
 from app.capabilities.registry import registry
 from app.capabilities.schemas import CapabilityValidationError
@@ -35,10 +37,24 @@ def test_capability_schema_rejects_unknown_and_out_of_range_arguments():
 
 
 def test_action_hash_is_stable_and_parameter_bound():
-    action = {"capability": "service.restart", "project_id": 1, "arguments": {"service": "redis"}}
+    action = {"capability": "service.restart", "version": "final-1", "definition_hash": "a" * 64, "project_id": 1, "arguments": {"service": "redis"}}
     assert compute_action_hash(action) == compute_action_hash(dict(reversed(list(action.items()))))
     changed = {**action, "arguments": {"service": "mysql"}}
     assert compute_action_hash(action) != compute_action_hash(changed)
+    changed_definition = {**action, "definition_hash": "b" * 64}
+    assert compute_action_hash(action) != compute_action_hash(changed_definition)
+
+
+def test_registry_binding_requires_exact_name_version_and_definition_hash(monkeypatch):
+    definition = registry.get("service.restart")
+    binding = registry.binding(definition)
+    assert registry.get_bound(**binding) == definition
+    assert registry.get_bound(definition.name, "other-version", binding["definition_hash"]) is None
+    assert registry.get_bound(definition.name, definition.version, "0" * 64) is None
+
+    changed_without_version_bump = replace(definition, description="silently changed definition")
+    monkeypatch.setitem(registry._definitions, definition.name, changed_without_version_bump)
+    assert registry.get_bound(**binding) is None
 
 
 def test_scale_verification_counts_compose_instances_and_kubernetes_replicas():
@@ -55,3 +71,14 @@ def test_scale_verification_counts_compose_instances_and_kubernetes_replicas():
 def test_restart_precheck_rejects_empty_status_output():
     action = Action(capability_name="service.restart", arguments_json={"service": "redis"})
     assert not OpsAgentGraph._precheck_satisfied(action, {"status": "success", "data": {"stdout": ""}})
+
+
+@pytest.mark.parametrize("capability", ["service.start", "service.stop", "service.restart"])
+def test_state_change_precheck_rejects_unobserved_service(capability):
+    action = Action(capability_name=capability, arguments_json={"service": "redis"})
+    assert not OpsAgentGraph._precheck_satisfied(action, {"status": "success", "data": {"stdout": "[]", "records": [], "parse_valid": True}})
+
+
+def test_scale_precheck_accepts_verified_zero_instance_state():
+    action = Action(capability_name="service.scale", arguments_json={"service": "redis", "replicas": 1})
+    assert OpsAgentGraph._precheck_satisfied(action, {"status": "success", "data": {"stdout": "[]", "records": [], "parse_valid": True}})

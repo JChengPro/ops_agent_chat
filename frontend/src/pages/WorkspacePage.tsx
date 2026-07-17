@@ -1,45 +1,117 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, BadgeCheck, BookOpenText, ChevronRight, CircleAlert, CircleCheck, CircleHelp, Code2, Edit3, Folder, FolderOpen, LogOut, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Send, Settings, StopCircle, ThumbsDown, ThumbsUp, Trash2, UserCircle, XCircle } from "lucide-react";
-import { cancelRun, collectContext, createExperience, createProject, createSession, decideApproval, deleteExperience, deleteProject, deleteSession, getRun, listActions, listEntities, listEnvironments, listEvidence, listExperience, listGeneralRuns, listGeneralSessions, listMessages, listProjects, listRuns, listSessions, listSteps, queueMessage, sendFeedback, updateExperience, updateProject, updateSession } from "../api/ops";
-import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, Entity, Environment, Evidence, ExperienceItem, Project, User } from "../api/types";
-import { isRunPollingTerminal, markApprovalDecision, rollbackDescription, shouldApplySessionResult } from "../uiState";
+import { FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Activity, BadgeCheck, BookOpenText, Check, ChevronRight, CircleAlert, CircleCheck, CircleHelp, Code2, Copy, Edit3, Folder, FolderOpen, KeyRound, LogOut, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Send, Server, Settings, StopCircle, ThumbsDown, ThumbsUp, Trash2, UserCircle, XCircle } from "lucide-react";
+import { cancelCollectorRun, cancelRun, collectContext, createConnection, createEnvironment, createExperience, createProject, createSession, decideApprovalBatch, deleteConnection, deleteEnvironment, deleteExperience, deleteProject, deleteSession, getRun, listActions, listCollectorRuns, listConnections, listEntities, listEnvironments, listEvidence, listExperience, listGeneralRuns, listGeneralSessions, listMessages, listProjects, listRuns, listSessions, listSteps, queueMessage, sendFeedback, testEnvironmentConnection, updateConnection, updateEnvironment, updateExperience, updateProject, updateSession } from "../api/ops";
+import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, ConnectionPayload, Entity, Environment, EnvironmentPayload, Evidence, ExperienceItem, Project, User } from "../api/types";
+import { applyApprovalBatchResult, humanCapability, humanEvidenceSummary, isRunPollingTerminal, rollbackDescription, shouldApplySessionResult } from "../uiState";
 
 type Tab = "activity" | "experience" | "config";
-type Menu = {type:"project"|"session";id:number}|null;
+type Menu = {type:"project"|"session";id:number;x:number;y:number}|null;
+type ApprovalSubmission = {runId:string;decision:"approve"|"reject"}|null;
 
 export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promise<void>}) {
   const [projects,setProjects]=useState<Project[]>([]), [sessions,setSessions]=useState<ChatSession[]>([]), [messages,setMessages]=useState<ChatMessage[]>([]);
-  const [environments,setEnvironments]=useState<Environment[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [entities,setEntities]=useState<Entity[]>([]);
+  const [environments,setEnvironments]=useState<Environment[]>([]), [connections,setConnections]=useState<Connection[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [entities,setEntities]=useState<Entity[]>([]), [collectorRuns,setCollectorRuns]=useState<CollectorRun[]>([]);
   const [projectId,setProjectId]=useState<number|null>(null), [sessionId,setSessionId]=useState<number|null>(null), [input,setInput]=useState(""), [sending,setSending]=useState(false);
   const [projectsReady,setProjectsReady]=useState(false);
   const [activeRunId,setActiveRunId]=useState<string|null>(null), [cancelling,setCancelling]=useState(false);
   const [tab,setTab]=useState<Tab>("activity"), [leftCollapsed,setLeftCollapsed]=useState(false), [rightCollapsed,setRightCollapsed]=useState(false), [navOpen,setNavOpen]=useState(false), [menu,setMenu]=useState<Menu>(null);
-  const [notice,setNotice]=useState<{kind:"success"|"error"|"info";text:string}|null>(null), [approvalBusy,setApprovalBusy]=useState<string|null>(null);
+  const [notice,setNotice]=useState<{kind:"success"|"error"|"info";text:string}|null>(null), [approvalBusy,setApprovalBusy]=useState<ApprovalSubmission>(null), [collectorRefreshKey,setCollectorRefreshKey]=useState(0);
   const endRef=useRef<HTMLDivElement|null>(null), messageRefs=useRef<Record<number,HTMLElement|null>>({}), currentSessionRef=useRef<number|null>(null);
   const project=useMemo(()=>projects.find(x=>x.id===projectId)||null,[projects,projectId]);
   const session=useMemo(()=>sessions.find(x=>x.id===sessionId)||null,[sessions,sessionId]);
+  const menuProject=useMemo(()=>menu?.type==="project"?projects.find(item=>item.id===menu.id)||null:null,[menu,projects]);
+  const menuSession=useMemo(()=>menu?.type==="session"?sessions.find(item=>item.id===menu.id)||null:null,[menu,sessions]);
+  const activeEnvironment=useMemo(()=>environments.find(item=>item.id===session?.environment_id)||environments.find(item=>item.is_default)||environments[0]||null,[environments,session]);
 
   useEffect(()=>{void refreshProjects();},[]);
-  useEffect(()=>{if(!projectsReady)return;setMessages([]);if(projectId===null){setEnvironments([]);setExperience([]);setEntities([]);Promise.all([listGeneralSessions(),listGeneralRuns()]).then(async([s,r])=>{setSessions(s);setRuns(r);if(s[0])setSessionId(s[0].id);else{const made=await createSession(null);setSessions([made]);setSessionId(made.id);}});return;}Promise.all([listSessions(projectId),listEnvironments(projectId),listRuns(projectId),listExperience(projectId),listEntities(projectId)]).then(async([s,e,r,x,n])=>{setSessions(s);setEnvironments(e);setRuns(r);setExperience(x);setEntities(n);if(s[0])setSessionId(s[0].id);else{const made=await createSession(projectId);setSessions([made]);setSessionId(made.id);}});},[projectId,projectsReady]);
-  useEffect(()=>{if(!sessionId)return;Promise.all([listMessages(sessionId),projectId===null?listGeneralRuns(sessionId):listRuns(projectId,sessionId)]).then(([m,r])=>{setMessages(m);setRuns(r);});},[sessionId,projectId]);
+  useEffect(()=>{
+    if(!projectsReady)return;
+    let disposed=false;
+    currentSessionRef.current=null;
+    setSessionId(null);
+    setMessages([]);
+    setCollectorRuns([]);
+    setEnvironments([]);
+    setConnections([]);
+    setExperience([]);
+    setEntities([]);
+    async function load(){
+      try{
+        if(projectId===null){
+          const [s,r]=await Promise.all([listGeneralSessions(),listGeneralRuns()]);
+          if(disposed)return;
+          setSessions(s);setRuns(r);
+          const selected=s[0]||await createSession(null);
+          if(disposed)return;
+          if(!s[0])setSessions([selected]);
+          setSessionId(selected.id);
+          return;
+        }
+        const [s,e,r,x,c]=await Promise.all([listSessions(projectId),listEnvironments(projectId),listRuns(projectId),listExperience(projectId),listConnections()]);
+        const environmentId=s[0]?.environment_id||e.find(item=>item.is_default)?.id||e[0]?.id;
+        const n=await listEntities(projectId,environmentId||undefined);
+        if(disposed)return;
+        setSessions(s);setEnvironments(e);setConnections(c);setRuns(r);setExperience(x.filter(item=>item.trust_status!=="archived"));setEntities(n);
+        const selected=s[0]||await createSession(projectId);
+        if(disposed)return;
+        if(!s[0])setSessions([selected]);
+        setSessionId(selected.id);
+      }catch(error){if(!disposed)showNotice("error",error instanceof Error?error.message:"项目数据加载失败");}
+    }
+    void load();
+    return()=>{disposed=true;};
+  },[projectId,projectsReady]);
+  useEffect(()=>{if(!sessionId)return;let disposed=false;Promise.all([listMessages(sessionId),projectId===null?listGeneralRuns(sessionId):listRuns(projectId,sessionId)]).then(([m,r])=>{if(!disposed){setMessages(m);setRuns(r);}}).catch(error=>{if(!disposed)showNotice("error",error instanceof Error?error.message:"聊天记录加载失败");});return()=>{disposed=true;};},[sessionId,projectId]);
   useEffect(()=>{currentSessionRef.current=sessionId;},[sessionId]);
   useEffect(()=>{endRef.current?.scrollIntoView({behavior:"smooth",block:"end"});},[messages,sending]);
+  useEffect(()=>{if(!menu)return;const close=()=>setMenu(null);window.addEventListener("resize",close);document.addEventListener("scroll",close,true);return()=>{window.removeEventListener("resize",close);document.removeEventListener("scroll",close,true);};},[menu]);
+  useEffect(()=>{const environmentId=activeEnvironment?.id;setCollectorRuns([]);if(!projectId||!environmentId)return;let disposed=false,timer:number|undefined;async function refresh(){try{const rows=await listCollectorRuns(environmentId);if(disposed)return;setCollectorRuns(rows);if(rows.some(item=>item.status==="queued"||item.status==="running")){timer=window.setTimeout(refresh,1200);}else{setEntities(await listEntities(projectId!,environmentId));}}catch(error){if(!disposed)showNotice("error",error instanceof Error?error.message:"采集状态加载失败");}}void refresh();return()=>{disposed=true;if(timer)window.clearTimeout(timer);};},[projectId,activeEnvironment?.id,collectorRefreshKey]);
 
   async function refreshProjects(){const rows=await listProjects();setProjects(rows);setProjectId(value=>value&&rows.some(x=>x.id===value)?value:rows[0]?.id??null);setProjectsReady(true);}
   function showNotice(kind:"success"|"error"|"info",text:string){setNotice({kind,text});}
   async function refreshSession(targetSessionId:number,targetProjectId:number|null){const [m,r]=await Promise.all([listMessages(targetSessionId),targetProjectId===null?listGeneralRuns(targetSessionId):listRuns(targetProjectId,targetSessionId)]);if(shouldApplySessionResult(currentSessionRef.current,targetSessionId)){setMessages(m);setRuns(r);}}
   async function refreshCurrentSession(){if(!sessionId)return;await refreshSession(sessionId,projectId);}
-  async function newProject(){const name=window.prompt("项目名称")?.trim();if(!name)return;try{const row=await createProject({name});setProjects(x=>sortProjects([row,...x]));setProjectId(row.id);showNotice("success","项目已创建");}catch(error){showNotice("error",error instanceof Error?error.message:"创建项目失败");}}
-  async function newSession(){try{const row=await createSession(projectId);setSessions(x=>[row,...x]);setSessionId(row.id);setMessages([]);showNotice("success","新对话已创建");}catch(error){showNotice("error",error instanceof Error?error.message:"创建对话失败");}}
+  async function newProject(){const name=window.prompt("项目名称")?.trim();if(!name)return;try{const row=await createProject({name});setProjects(x=>sortProjects([row,...x]));setProjectId(row.id);setTab("config");setRightCollapsed(false);showNotice("info","项目已创建。请新建 SSH 连接并按配置指南完成密钥准备，再新建运行环境并关联该连接。");}catch(error){showNotice("error",error instanceof Error?error.message:"创建项目失败");}}
+  async function newSession(){try{const row=await createSession(projectId,"新会话",activeEnvironment?.id);setSessions(x=>[row,...x]);setSessionId(row.id);setMessages([]);showNotice("success","新对话已创建");}catch(error){showNotice("error",error instanceof Error?error.message:"创建对话失败");}}
+  async function selectEnvironment(environmentId:number){const existing=sessions.find(item=>item.environment_id===environmentId);if(existing){setSessionId(existing.id);return;}try{const row=await createSession(projectId,"新会话",environmentId);setSessions(items=>[row,...items]);setSessionId(row.id);setMessages([]);showNotice("success","已切换运行环境并创建新对话");}catch(error){showNotice("error",error instanceof Error?error.message:"切换运行环境失败");}}
+  async function saveEnvironment(payload:EnvironmentPayload,id?:number){if(!projectId)return;const row=id?await updateEnvironment(id,payload):await createEnvironment(projectId,payload);const updated=await listEnvironments(projectId);setEnvironments(updated);if(!id)await selectEnvironment(row.id);showNotice("success",id?"环境配置已更新":"运行环境已创建");}
+  async function removeEnvironment(item:Environment){if(!projectId||!window.confirm(`删除运行环境“${item.name}”？已有治理记录会保留。`))return;try{await deleteEnvironment(item.id);const updated=await listEnvironments(projectId);setEnvironments(updated);if(session?.environment_id===item.id&&updated[0])await selectEnvironment(updated[0].id);showNotice("success","运行环境已停用");}catch(error){showNotice("error",error instanceof Error?error.message:"删除运行环境失败");}}
+  async function saveConnection(payload:ConnectionPayload,id?:number){if(id){const changes={...payload};delete changes.connection_type;await updateConnection(id,changes);}else await createConnection(payload);setConnections(await listConnections());showNotice("success",id?"连接配置已更新":"连接已创建");}
+  async function testConnection(environmentId:number){showNotice("info","正在测试 SSH 连接");try{const result=await testEnvironmentConnection(environmentId);setConnections(await listConnections());showNotice(result.ok?"success":"error",result.ok?"SSH 连接成功":result.message);}catch(error){showNotice("error",error instanceof Error?error.message:"SSH 连接测试失败");}}
+  async function removeConnection(item:Connection){if(!window.confirm(`删除连接“${item.name}”？`))return;try{await deleteConnection(item.id);setConnections(await listConnections());showNotice("success","连接已删除");}catch(error){showNotice("error",error instanceof Error?error.message:"删除连接失败");}}
   async function waitForRun(runId:string,targetSessionId:number,targetProjectId:number|null){const deadline=Date.now()+5*60*1000;while(Date.now()<deadline){const run=await getRun(runId);await refreshSession(targetSessionId,targetProjectId);if(isRunPollingTerminal(run.status))return run;await new Promise(resolve=>window.setTimeout(resolve,800));}throw new Error("任务仍在后台运行，请稍后查看活动记录");}
-  async function submit(e:FormEvent){e.preventDefault();if(!sessionId||!input.trim()||sending)return;const targetSessionId=sessionId,targetProjectId=projectId,content=input.trim(),tempId=Date.now();setInput("");setSending(true);setMessages(x=>[...x,{id:tempId,session_id:targetSessionId,project_id:targetProjectId,role:"user",content,message_type:"text",metadata_json:{}}]);try{const queued=await queueMessage(targetSessionId,content);setActiveRunId(queued.run_summary.id);setMessages(x=>x.map(m=>m.id===tempId?queued.user_message:m));await waitForRun(queued.run_summary.id,targetSessionId,targetProjectId);}catch(error){showNotice("error",error instanceof Error?error.message:"请求失败");await refreshSession(targetSessionId,targetProjectId);}finally{setActiveRunId(null);setCancelling(false);setSending(false);}}
+  async function submit(e:FormEvent){e.preventDefault();if(!sessionId||!input.trim()||sending)return;const targetSessionId=sessionId,targetProjectId=projectId,content=input.trim(),tempId=Date.now(),clientRequestId=crypto.randomUUID();setInput("");setSending(true);setMessages(x=>[...x,{id:tempId,session_id:targetSessionId,project_id:targetProjectId,role:"user",content,message_type:"text",metadata_json:{}}]);try{const queued=await queueMessage(targetSessionId,content,clientRequestId);setActiveRunId(queued.run_summary.id);setMessages(x=>x.map(m=>m.id===tempId?queued.user_message:m));await waitForRun(queued.run_summary.id,targetSessionId,targetProjectId);}catch(error){showNotice("error",error instanceof Error?error.message:"请求失败");await refreshSession(targetSessionId,targetProjectId);}finally{setActiveRunId(null);setCancelling(false);setSending(false);}}
   async function stopRun(){if(!activeRunId||cancelling)return;setCancelling(true);try{await cancelRun(activeRunId);}finally{setCancelling(false);}}
+  function toggleMenu(event:ReactMouseEvent<HTMLButtonElement>,type:"project"|"session",id:number){event.stopPropagation();if(menu?.type===type&&menu.id===id){setMenu(null);return;}const rect=event.currentTarget.getBoundingClientRect(),width=168,height=132,gap=6,padding=8;const x=Math.max(padding,Math.min(rect.right-width,window.innerWidth-width-padding));const y=rect.bottom+gap+height<=window.innerHeight-padding?rect.bottom+gap:Math.max(padding,rect.top-height-gap);setMenu({type,id,x,y});}
   async function mutateProject(item:Project,action:"rename"|"pin"|"delete"){setMenu(null);if(action==="rename"){const name=window.prompt("重命名项目",item.name)?.trim();if(name){const row=await updateProject(item.id,{name});setProjects(x=>sortProjects(x.map(v=>v.id===row.id?row:v)));}}else if(action==="pin"){const row=await updateProject(item.id,{is_pinned:!item.is_pinned});setProjects(x=>sortProjects(x.map(v=>v.id===row.id?row:v)));}else if(window.confirm(`删除项目“${item.name}”？`)){await deleteProject(item.id);await refreshProjects();}}
   async function mutateSession(item:ChatSession,action:"rename"|"pin"|"delete"){setMenu(null);if(action==="rename"){const title=window.prompt("重命名聊天",item.title)?.trim();if(title){const row=await updateSession(item.id,{title});setSessions(x=>sortSessions(x.map(v=>v.id===row.id?row:v)));}}else if(action==="pin"){const row=await updateSession(item.id,{is_pinned:!item.is_pinned});setSessions(x=>sortSessions(x.map(v=>v.id===row.id?row:v)));}else if(window.confirm(`删除聊天“${item.title}”？`)){await deleteSession(item.id);const next=sessions.filter(v=>v.id!==item.id);setSessions(next);setSessionId(next[0]?.id??null);}}
-  async function approve(item:Approval,decision:"approve"|"reject"){if(approvalBusy||!sessionId)return;const targetSessionId=sessionId,targetProjectId=projectId;setApprovalBusy(item.id);showNotice("info",decision==="approve"?"批准已记录，任务正在排队执行":"拒绝已记录，任务正在安全结束");setMessages(rows=>markApprovalDecision(rows,item.id,decision==="approve"?"approved":"rejected"));try{const result=await decideApproval(item,decision);let finalRun=result.run_summary;if(finalRun){setSending(finalRun.status!=="waiting_for_approval");setActiveRunId(finalRun.status!=="waiting_for_approval"?finalRun.id:null);finalRun=await waitForRun(finalRun.id,targetSessionId,targetProjectId);}else await refreshSession(targetSessionId,targetProjectId);if(finalRun?.status==="waiting_for_approval")showNotice("info","这项决定已记录，仍有其他变更等待确认");else showNotice("success",decision==="approve"?"变更流程已完成":"已拒绝，本次变更未执行");}catch(error){showNotice("error",error instanceof Error?error.message:"审批提交失败");await refreshSession(targetSessionId,targetProjectId);}finally{setApprovalBusy(null);setActiveRunId(null);setSending(false);}}
+  async function monitorApprovedRun(run:AgentRun,targetSessionId:number,targetProjectId:number|null,decision:"approve"|"reject"){
+    setSending(true);setActiveRunId(run.id);
+    try{const finalRun=await waitForRun(run.id,targetSessionId,targetProjectId);if(decision==="reject")showNotice("success","审批批次已拒绝，本次变更未执行");else if(finalRun.status==="completed")showNotice("success","变更执行和验证已经完成");else showNotice("error","审批已记录，但变更流程未成功完成，请查看 Agent 活动");}
+    catch(error){showNotice("error",error instanceof Error?error.message:"审批已记录，但执行状态刷新失败");await refreshSession(targetSessionId,targetProjectId);}
+    finally{setActiveRunId(null);setSending(false);}
+  }
+  async function approve(items:Approval[],decision:"approve"|"reject"){
+    if(approvalBusy||!sessionId)return;
+    const pending=items.filter(item=>item.decision==="pending"),runId=String(pending[0]?.action?.run_id||"");
+    if(!pending.length||!runId){showNotice("error","审批批次信息不完整，请刷新页面后重试");return;}
+    const targetSessionId=sessionId,targetProjectId=projectId;
+    setApprovalBusy({runId,decision});
+    showNotice("info",decision==="approve"?`正在提交 ${pending.length} 项批准…`:`正在拒绝 ${pending.length} 项变更…`);
+    try{
+      const result=await decideApprovalBatch(runId,pending,decision);
+      setMessages(rows=>applyApprovalBatchResult(rows,result.approvals,result.run_summary.status));
+      setApprovalBusy(null);
+      showNotice("success",decision==="approve"?`已批准 ${result.approvals.length} 项变更，任务已进入执行队列`:`已拒绝 ${result.approvals.length} 项变更`);
+      void monitorApprovedRun(result.run_summary,targetSessionId,targetProjectId,decision);
+    }catch(error){setApprovalBusy(null);showNotice("error",error instanceof Error?error.message:"审批提交失败");await refreshSession(targetSessionId,targetProjectId);}
+  }
 
   return <main className={`workspace ${leftCollapsed?"left-collapsed":""} ${rightCollapsed?"right-collapsed":""}`} onClick={()=>setMenu(null)}>
     {notice&&<div className={`notice ${notice.kind}`}><span>{notice.text}</span><button onClick={e=>{e.stopPropagation();setNotice(null);}}>×</button></div>}
+    {menuProject&&menu&&createPortal(<ActionMenu pinned={menuProject.is_pinned} x={menu.x} y={menu.y} onAction={action=>mutateProject(menuProject,action)}/>,document.body)}
+    {menuSession&&menu&&createPortal(<ActionMenu pinned={menuSession.is_pinned} x={menu.x} y={menu.y} onAction={action=>mutateSession(menuSession,action)}/>,document.body)}
     {leftCollapsed&&<button className="collapsed-open left-open" onClick={()=>setLeftCollapsed(false)} title="打开左侧栏"><PanelLeftOpen size={18}/></button>}
     {rightCollapsed&&<button className="collapsed-open right-open" onClick={()=>setRightCollapsed(false)} title="打开右侧栏"><PanelRightOpen size={18}/></button>}
     <aside className="glass-panel left-pane">
@@ -48,59 +120,207 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
       <button className="new-chat-primary" onClick={newSession}><Plus size={17}/>新增对话</button>
       <section className={`left-block project-block ${projects.length>3?"compact":""}`}><div className="block-title"><span>项目</span><button className="mini-create" onClick={newProject} title="新建项目"><Plus size={15}/>新建</button></div><div className="project-scroll">
         <div className={`nav-row ${projectId===null?"selected":""}`}><button className="project-item" onClick={()=>setProjectId(null)}><MessageSquare size={19}/><span>通用聊天</span></button></div>
-        {projects.map(item=><div className="nav-entry" key={item.id}><div className={`nav-row ${item.id===projectId?"selected":""}`}><button className="project-item" onClick={()=>setProjectId(item.id)} title={item.name}>{item.id===projectId?<FolderOpen size={19}/>:<Folder size={19}/>}<span>{item.name}</span>{item.is_pinned&&<Pin size={13}/>}</button><MoreButton onClick={()=>setMenu(menu?.type==="project"&&menu.id===item.id?null:{type:"project",id:item.id})}/></div>{menu?.type==="project"&&menu.id===item.id&&<ActionMenu pinned={item.is_pinned} onAction={a=>mutateProject(item,a)}/>}</div>)}
+        {projects.map(item=><div className="nav-entry" key={item.id}><div className={`nav-row ${item.id===projectId?"selected":""}`}><button className="project-item" onClick={()=>setProjectId(item.id)} title={item.name}>{item.id===projectId?<FolderOpen size={19}/>:<Folder size={19}/>}<span>{item.name}</span>{item.is_pinned&&<Pin size={13}/>}</button><MoreButton onClick={event=>toggleMenu(event,"project",item.id)}/></div></div>)}
       </div></section>
       <section className="left-block session-block"><div className="block-title"><span>聊天记录</span><button className="mini-create" onClick={newSession} title="新建聊天"><Plus size={15}/>新聊天</button></div><div className="session-scroll">
-        {sessions.map(item=><div className="nav-entry" key={item.id}><div className={`nav-row ${item.id===sessionId?"selected":""}`}><button className="session-item" onClick={()=>setSessionId(item.id)} title={item.title}><MessageSquare size={16}/><span>{item.title}</span>{item.is_pinned&&<Pin size={13}/>}</button><MoreButton onClick={()=>setMenu(menu?.type==="session"&&menu.id===item.id?null:{type:"session",id:item.id})}/></div>{menu?.type==="session"&&menu.id===item.id&&<ActionMenu pinned={item.is_pinned} onAction={a=>mutateSession(item,a)}/>}</div>)}
+        {sessions.map(item=><div className="nav-entry" key={item.id}><div className={`nav-row ${item.id===sessionId?"selected":""}`}><button className="session-item" onClick={()=>setSessionId(item.id)} title={item.title}><MessageSquare size={16}/><span>{item.title}</span>{item.is_pinned&&<Pin size={13}/>}</button><MoreButton onClick={event=>toggleMenu(event,"session",item.id)}/></div></div>)}
       </div></section>
       <button className="logout" onClick={onLogout}><UserCircle size={25}/><span>{user.username}</span><LogOut size={17}/></button>
     </aside>
-    <section className="glass-panel chat-pane"><header className="chat-header"><div><strong>{project?.name??"通用聊天"}</strong><span>{session?.title??"新会话"}</span></div><div className="chat-header-actions"><button className={`outline-toggle ${navOpen?"active":""}`} onClick={()=>setNavOpen(x=>!x)} title="消息导航"><MessageSquare size={17}/></button><span className="mode-badge">受控运维</span></div></header>
+    <section className="glass-panel chat-pane"><header className="chat-header"><div><strong>{project?.name??"通用聊天"}</strong><span>{session?.title??"新会话"}</span></div><div className="chat-header-actions">{project&&activeEnvironment&&<select className="environment-select" value={activeEnvironment.id} onChange={event=>void selectEnvironment(Number(event.target.value))} title="当前运行环境">{environments.map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select>}<button className={`outline-toggle ${navOpen?"active":""}`} onClick={()=>setNavOpen(x=>!x)} title="消息导航"><MessageSquare size={17}/></button><span className="mode-badge">受控运维</span></div></header>
       <MessageNav open={navOpen} messages={messages} jump={id=>messageRefs.current[id]?.scrollIntoView({behavior:"smooth",block:"center"})}/>
       <div className="message-list">{messages.length===0&&!sending&&<div className="empty-chat"><div className="empty-mark">&gt;_</div><h2>我能帮你处理什么？</h2><p>可以问通用问题，也可以调查当前项目或提出受控变更。</p></div>}
         {messages.map(m=><MessageView key={m.id} message={m} setRef={el=>{messageRefs.current[m.id]=el;}} onApproval={approve} approvalBusy={approvalBusy}/>) }{sending&&<div className="message assistant"><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="typing-line"><span/><span/><span/></div></div></div>}<div ref={endRef}/></div>
       <form className="composer" onSubmit={submit}><input value={input} onChange={e=>setInput(e.target.value)} placeholder="输入问题或描述要完成的任务" disabled={sending}/>{activeRunId?<button type="button" className="stop-run" onClick={stopRun} disabled={cancelling}><StopCircle size={18}/>{cancelling?"停止中":"停止"}</button>:<button disabled={sending}><Send size={18}/>发送</button>}</form>
     </section>
     <aside className="glass-panel right-pane"><button className="pane-toggle" onClick={()=>setRightCollapsed(true)} title="关闭右侧栏"><PanelRightClose size={17}/></button><div className="right-pane-head"><div className="tabs"><button className={tab==="activity"?"active":""} onClick={()=>setTab("activity")}><Activity size={16}/>活动</button><button className={tab==="experience"?"active":""} onClick={()=>setTab("experience")}><BookOpenText size={16}/>经验</button><button className={tab==="config"?"active":""} onClick={()=>setTab("config")}><Settings size={16}/>配置</button></div></div>
-      {tab==="activity"&&<ActivityPanel runs={runs}/>} {tab==="experience"&&(projectId?<ExperiencePanel items={experience} projectId={projectId} onChange={setExperience}/>:<div className="side-card"><p className="empty-note">通用聊天不使用项目经验。</p></div>)} {tab==="config"&&<ConfigPanel project={project} environments={environments} entities={entities} onCollect={async()=>{if(environments[0]){await collectContext(environments[0].id);setEntities(await listEntities(projectId!));}}}/>}
+      {tab==="activity"&&<ActivityPanel runs={runs}/>}
+      {tab==="experience"&&(projectId?<ExperiencePanel items={experience} projectId={projectId} onChange={setExperience}/>:<div className="side-card"><p className="empty-note">通用聊天不使用项目经验。</p></div>)}
+      {tab==="config"&&<ConfigPanel
+        project={project}
+        environment={activeEnvironment}
+        environments={environments}
+        connections={connections}
+        canManage={Boolean(project&&project.owner_id===user.id)}
+        entities={entities}
+        collectorRuns={collectorRuns}
+        onCollect={async()=>{
+          if(!activeEnvironment)return;
+          try{
+            const rows=await collectContext(activeEnvironment.id);
+            setCollectorRuns(rows);
+            setCollectorRefreshKey(value=>value+1);
+            showNotice("info","上下文采集已排队，完成后会自动刷新");
+          }catch(error){showNotice("error",error instanceof Error?error.message:"上下文采集失败");}
+        }}
+        onCancel={async id=>{
+          try{
+            const row=await cancelCollectorRun(id);
+            setCollectorRuns(items=>items.map(item=>item.id===row.id?row:item));
+            showNotice("success",row.status==="cancelled"?"采集任务已取消":"取消请求已记录，正在等待采集器安全停止");
+          }catch(error){showNotice("error",error instanceof Error?error.message:"取消采集失败");}
+        }}
+        onSaveEnvironment={saveEnvironment}
+        onDeleteEnvironment={removeEnvironment}
+        onSaveConnection={saveConnection}
+        onDeleteConnection={removeConnection}
+        onTestConnection={testConnection}
+      />}
     </aside>
   </main>;
 }
 
-function MoreButton({onClick}:{onClick:()=>void}){return <button className="row-menu-trigger" onClick={e=>{e.stopPropagation();onClick();}} title="更多"><MoreHorizontal size={17}/></button>}
-function ActionMenu({pinned,onAction}:{pinned:boolean;onAction:(a:"rename"|"pin"|"delete")=>void}){return <div className="action-menu" onClick={e=>e.stopPropagation()}><button onClick={()=>onAction("rename")}><Edit3 size={16}/>重命名</button><button onClick={()=>onAction("pin")}>{pinned?<PinOff size={16}/>:<Pin size={16}/>} {pinned?"取消置顶":"置顶"}</button><button className="danger" onClick={()=>onAction("delete")}><Trash2 size={16}/>删除</button></div>}
+function MoreButton({onClick}:{onClick:(event:ReactMouseEvent<HTMLButtonElement>)=>void}){return <button className="row-menu-trigger" onClick={onClick} title="更多"><MoreHorizontal size={17}/></button>}
+function ActionMenu({pinned,x,y,onAction}:{pinned:boolean;x:number;y:number;onAction:(a:"rename"|"pin"|"delete")=>void}){return <div className="action-menu" style={{left:x,top:y}} onClick={e=>e.stopPropagation()}><button onClick={()=>onAction("rename")}><Edit3 size={16}/>重命名</button><button onClick={()=>onAction("pin")}>{pinned?<PinOff size={16}/>:<Pin size={16}/>} {pinned?"取消置顶":"置顶"}</button><button className="danger" onClick={()=>onAction("delete")}><Trash2 size={16}/>删除</button></div>}
 
-function MessageView({message,setRef,onApproval,approvalBusy}:{message:ChatMessage;setRef:(e:HTMLElement|null)=>void;onApproval:(a:Approval,d:"approve"|"reject")=>void;approvalBusy:string|null}){
+function MessageView({message,setRef,onApproval,approvalBusy}:{message:ChatMessage;setRef:(e:HTMLElement|null)=>void;onApproval:(a:Approval[],d:"approve"|"reject")=>void;approvalBusy:ApprovalSubmission}){
   if(message.role==="user")return <article className="message user" ref={setRef}><div className="user-bubble">{message.content}</div></article>;
   const approvals=message.metadata_json.approvals||[];
-  return <article className="message assistant" ref={setRef}><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="answer-header"><span>Ops Agent</span><small>{String(message.metadata_json.run_status||"")}</small></div><RichText text={message.content}/>{approvals.map(a=><ApprovalCard key={a.id} item={a} busy={approvalBusy===a.id} onDecision={d=>onApproval(a,d)}/>)}{Boolean(message.metadata_json.evidence_ids?.length)&&<div className="source-strip"><span>依据</span><em>{message.metadata_json.evidence_ids!.length} 条可追踪证据</em></div>}<Feedback messageId={message.id}/></div></article>;
+  return <article className="message assistant" ref={setRef}><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="answer-header"><span>Ops Agent</span><small>{String(message.metadata_json.run_status||"")}</small></div><RichText text={message.content}/>{approvals.length>0&&<ApprovalBatchCard items={approvals} busy={approvalBusy} onDecision={onApproval}/>} {Boolean(message.metadata_json.evidence_ids?.length)&&<div className="source-strip"><span>依据</span><em>{message.metadata_json.evidence_ids!.length} 条可追踪证据</em></div>}<Feedback messageId={message.id}/></div></article>;
 }
 function RichText({text}:{text:string}){return <div className="natural-answer">{text.split(/\n{2,}/).map((p,i)=>{const lines=p.split("\n");return <div key={i} className="answer-paragraph">{lines.map((line,j)=>{const value=line.replace(/^#{1,6}\s*/,"");if(/^#{1,6}\s/.test(line))return <h4 key={j}>{formatInline(value)}</h4>;if(/^[-*]\s+/.test(line))return <p className="answer-bullet" key={j}>{formatInline(value.replace(/^[-*]\s+/,""))}</p>;if(/^\d+\.\s+/.test(line))return <p className="answer-number" key={j}>{formatInline(line)}</p>;return <p key={j}>{formatInline(value)}</p>})}</div>})}</div>}
 function formatInline(text:string){return text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean).map((part,i)=>part.startsWith("`")&&part.endsWith("`")?<code key={i}>{part.slice(1,-1)}</code>:part.startsWith("**")&&part.endsWith("**")?<strong key={i}>{part.slice(2,-2)}</strong>:part)}
-function ApprovalCard({item,busy,onDecision}:{item:Approval;busy:boolean;onDecision:(d:"approve"|"reject")=>void}){const pending=item.decision==="pending";const view=approvalView(item);return <section className="approval-card"><div className="approval-title"><CircleCheck size={18}/><strong>{pending?"需要你确认":"审批已处理"}</strong><span className={`approval-state ${item.decision}`}>{approvalStateText(item.decision,busy)}</span></div><div className="approval-main"><h4>{view.title}</h4><p>{view.impact}</p><p>{view.risk}</p></div><details className="approval-technical"><summary>查看技术细节</summary><p><b>能力</b><code>{item.action?.capability_name||"未知"}</code></p><p><b>目标</b><code>{view.target}</code></p><p><b>前置检查</b><span>{humanCapability(item.action?.precheck)||"无"}</span></p><p><b>执行验证</b><span>{humanCapability(item.action?.verifier)||"无"}</span></p><p><b>异常恢复</b><span>{rollbackDescription(item.action)}</span></p><small>有效期至 {new Date(item.expires_at).toLocaleString()}</small></details>{pending&&<div className="approval-actions"><button disabled={busy} onClick={()=>onDecision("reject")}><XCircle size={16}/>{busy?"提交中":"拒绝"}</button><button disabled={busy} className="approve" onClick={()=>onDecision("approve")}><CircleCheck size={16}/>{busy?"执行中":"批准"}</button></div>}</section>}
+function ApprovalBatchCard({items,busy,onDecision}:{items:Approval[];busy:ApprovalSubmission;onDecision:(items:Approval[],decision:"approve"|"reject")=>void}){
+  const pending=items.filter(item=>item.decision==="pending"),runId=String(items[0]?.action?.run_id||"");
+  const submitting=busy?.runId===runId,locked=Boolean(busy),multiple=items.length>1;
+  const title=submitting?(busy?.decision==="approve"?"正在提交整批批准":"正在拒绝整批变更"):pending.length?`需要你确认${multiple?` ${pending.length} 项变更`:""}`:"审批已处理";
+  const state=submitting?"正在提交":pending.length?`${pending.length} 项待确认`:items.every(item=>item.decision==="approved")?"全部已批准":items.some(item=>item.decision==="rejected")?"已拒绝":"已结束";
+  return <section className="approval-card approval-batch"><div className="approval-title">{submitting?<RefreshCw className="spinning" size={18}/>:<CircleCheck size={18}/>}<strong>{title}</strong><span className={`approval-state ${submitting?"submitting":pending.length?"pending":"decided"}`}>{state}</span></div>
+    <p className="approval-batch-note">{pending.length?"批准后，Agent 会按计划执行每项变更，并分别验证最终状态。":"该批次已经完成审批处理，执行结果请查看当前回答和 Agent 活动。"}</p>
+    <div className="approval-batch-items">{items.map(item=>{const view=approvalView(item);return <details className="approval-item" key={item.id}><summary><span><strong>{view.title}</strong><small>{item.action?.risk_level||"L2"} · {humanCapability(item.action?.capability_name)}</small></span><em className={item.decision}>{approvalDecisionText(item.decision)}</em></summary><div className="approval-item-body"><p><b>影响</b><span>{view.impact}</span></p><p><b>风险</b><span>{view.risk}</span></p><div className="approval-item-technical"><p><b>目标</b><code>{view.target}</code></p><p><b>前置检查</b><span>{humanCapability(item.action?.precheck)||"无"}</span></p><p><b>执行验证</b><span>{humanCapability(item.action?.verifier)||"无"}</span></p><p><b>异常恢复</b><span>{rollbackDescription(item.action)}</span></p><p><b>Action Hash</b><code>{item.action_hash.slice(0,16)}…</code></p><small>有效期至 {new Date(item.expires_at).toLocaleString()}</small></div></div></details>})}</div>
+    {pending.length>0&&<div className="approval-actions"><button disabled={locked} onClick={()=>onDecision(pending,"reject")}>{submitting&&busy?.decision==="reject"?<RefreshCw className="spinning" size={16}/>:<XCircle size={16}/>} {submitting&&busy?.decision==="reject"?"正在拒绝":multiple?"拒绝全部":"拒绝"}</button><button disabled={locked} className="approve" onClick={()=>onDecision(pending,"approve")}>{submitting&&busy?.decision==="approve"?<RefreshCw className="spinning" size={16}/>:<CircleCheck size={16}/>} {submitting&&busy?.decision==="approve"?"正在提交":multiple?`批准全部（${pending.length}）`:"批准"}</button></div>}
+  </section>
+}
 function approvalView(item:Approval){const capability=item.action?.capability_name||"";const target=String(item.action?.target_json?.name||item.action?.arguments_json?.service||"当前目标");const verb=capabilityVerb(capability);return {title:`确认${verb}${target}`,impact:naturalImpact(item,verb,target),risk:naturalRisk(item,verb,target),target};}
-function capabilityVerb(value:string){return ({"service.restart":"重启服务 ","service.start":"启动服务 ","service.stop":"停止服务 ","service.scale":"调整服务副本 ","config.update":"修改配置 "} as Record<string,string>)[value]||"执行变更 ";}
-function humanCapability(value?:string|null){return value?({"service.status":"检查服务状态","service.logs":"查看服务日志","service.restart":"重启服务","service.start":"启动服务","service.stop":"停止服务","service.scale":"调整服务副本","config.update":"修改配置"} as Record<string,string>)[value]||value:"";}
+function capabilityVerb(value:string){return ({"service.restart":"重启服务 ","service.start":"启动服务 ","service.stop":"停止服务 ","service.scale":"调整服务副本 ","config.update_registered":"修改已登记配置 ","deployment.apply_registered":"执行已登记部署 "} as Record<string,string>)[value]||"执行变更 ";}
 function naturalImpact(item:Approval,verb:string,target:string){if(item.impact_summary&&!/[a-z]+\.[a-z]+|\{.*\}/i.test(item.impact_summary))return item.impact_summary;return `Agent 准备${verb}${target}。批准后会执行这次变更，并在执行后再次检查服务状态。`;}
 function naturalRisk(item:Approval,verb:string,target:string){if(item.risk_summary&&!/[a-z]+\.[a-z]+|requires explicit approval|rollback/i.test(item.risk_summary))return item.risk_summary;const action=verb.trim();return `${action}可能让 ${target} 短暂不可用，正在处理的请求可能中断。当前没有自动回滚步骤，如果执行后状态异常，需要继续人工确认或再次让 Agent 诊断。`;}
-function approvalStateText(decision:string,busy:boolean){if(busy)return "处理中";if(decision==="approved")return "已批准";if(decision==="rejected")return "已拒绝";if(decision==="expired")return "已过期";return "待确认";}
+function approvalDecisionText(decision:string){if(decision==="approved")return "已批准";if(decision==="rejected")return "已拒绝";if(decision==="expired")return "已过期";if(decision==="cancelled")return "已取消";if(decision==="invalidated")return "已失效";return "待确认";}
 function Feedback({messageId}:{messageId:number}){const [done,setDone]=useState("");async function rate(r:string){await sendFeedback(messageId,r);setDone(r)}return <div className="feedback-row"><span>{done?"已记录":"评价回答"}</span>{!done&&<><button onClick={()=>rate("helpful")} title="有帮助"><ThumbsUp size={15}/></button><button onClick={()=>rate("incomplete")} title="不完整"><ThumbsDown size={15}/></button><button onClick={()=>rate("inaccurate")} title="不准确"><CircleAlert size={15}/></button><button onClick={()=>rate("unresolved")} title="未解决"><CircleHelp size={15}/></button></>}</div>}
 function MessageNav({open,messages,jump}:{open:boolean;messages:ChatMessage[];jump:(id:number)=>void}){return <aside className={`message-outline ${open?"open":""}`}><h3>消息导航</h3>{messages.map(m=><button key={m.id} className={`message-nav-row ${m.role}`} onClick={()=>jump(m.id)}><span>{m.role==="user"?"你":"Agent"}</span><strong>{m.content.replace(/[#*`]/g,"").slice(0,48)}</strong></button>)}</aside>}
 
 function ActivityPanel({runs}:{runs:AgentRun[]}){
   const [selected,setSelected]=useState<string|null>(null), [steps,setSteps]=useState<AgentStep[]>([]), [actions,setActions]=useState<Action[]>([]), [evidence,setEvidence]=useState<Evidence[]>([]);
   const [loading,setLoading]=useState(false), [loadError,setLoadError]=useState("");
+  const requestSequence=useRef(0);
   async function expand(id:string){
+    const sequence=++requestSequence.current;
     if(selected===id){setSelected(null);return;}
     setSelected(id);setSteps([]);setActions([]);setEvidence([]);setLoadError("");setLoading(true);
-    try{const [s,a,e]=await Promise.all([listSteps(id),listActions(id),listEvidence(id)]);setSteps(s);setActions(a);setEvidence(e);}
-    catch(error){setLoadError(error instanceof Error?error.message:"活动详情加载失败");}
-    finally{setLoading(false);}
+    try{const [s,a,e]=await Promise.all([listSteps(id),listActions(id),listEvidence(id)]);if(requestSequence.current===sequence){setSteps(s);setActions(a);setEvidence(e);}}
+    catch(error){if(requestSequence.current===sequence)setLoadError(error instanceof Error?error.message:"活动详情加载失败");}
+    finally{if(requestSequence.current===sequence)setLoading(false);}
   }
-  return <div className="side-card"><h3>Agent 活动</h3>{runs.length===0&&<p className="empty-note">当前会话暂无活动。</p>}{runs.map(run=><div className={`activity-row ${selected===run.id?"expanded":""}`} key={run.id}><button onClick={()=>expand(run.id)} aria-expanded={selected===run.id}><StatusDot status={run.status}/><span><strong>{goalOf(run)}</strong><small>{run.current_step||run.status} · {run.step_count} 步</small></span><ChevronRight className="activity-chevron" size={16}/></button>{selected===run.id&&<div className="activity-detail">{loading&&<p className="activity-note">正在加载活动详情...</p>}{loadError&&<p className="activity-error">{loadError}</p>}{!loading&&!loadError&&<>{run.status==="failed"&&<p className="activity-error">运行失败：{run.error_code||"未知错误"}</p>}<div className="step-list">{steps.map(step=><p key={step.id}><b>{step.sequence}. {stepLabel(step.step_type)}</b><span className={step.status}>{step.status==="success"?"完成":"失败"}</span></p>)}</div>{actions.map(a=><p key={a.id}><code>{a.capability_name}</code><span>{a.status}</span></p>)}{evidence.map(e=><details key={e.id} className="evidence-detail"><summary><b>{e.summary}</b><small>{new Date(e.observed_at).toLocaleTimeString()}</small></summary><pre>{JSON.stringify(e.data_json,null,2)}</pre><em>{e.fresh_until?`有效至 ${new Date(e.fresh_until).toLocaleTimeString()}`:"静态上下文"}</em></details>)}{actions.length===0&&evidence.length===0&&<p className="activity-note">本次请求未产生工具调用或运行证据。</p>}</>}</div>}</div>)}</div>;
+  return <div className="side-card"><h3>Agent 活动</h3>{runs.length===0&&<p className="empty-note">当前会话暂无活动。</p>}{runs.map(run=><div className={`activity-row ${selected===run.id?"expanded":""}`} key={run.id}><button onClick={()=>expand(run.id)} aria-expanded={selected===run.id}><StatusDot status={run.status}/><span><strong>{goalOf(run)}</strong><small>{runStepLabel(run.current_step||run.status)} · {run.step_count} 步</small></span><ChevronRight className="activity-chevron" size={16}/></button>{selected===run.id&&<div className="activity-detail">{loading&&<p className="activity-note">正在加载活动详情...</p>}{loadError&&<p className="activity-error">{loadError}</p>}{!loading&&!loadError&&<>{run.status==="failed"&&<p className="activity-error">运行失败：{runErrorLabel(run.error_code)}</p>}<div className="step-list">{steps.map(step=><p key={step.id}><b>{step.sequence}. {stepLabel(step.step_type)}</b><span className={step.status}>{stepStatusLabel(step.status)}</span></p>)}</div>{actions.map(a=><p key={a.id}><code>{humanCapability(a.capability_name)||a.capability_name}</code><span>{actionStatusLabel(a.status)}</span></p>)}{evidence.map(e=><details key={e.id} className="evidence-detail"><summary><b>{humanEvidenceSummary(e)}</b><small>{new Date(e.observed_at).toLocaleTimeString()}</small></summary><pre>{JSON.stringify(e.data_json,null,2)}</pre><em>{e.fresh_until?`有效至 ${new Date(e.fresh_until).toLocaleTimeString()}`:"静态上下文"}</em></details>)}{actions.length===0&&evidence.length===0&&<p className="activity-note">本次请求未产生工具调用或运行证据。</p>}</>}</div>}</div>)}</div>;
 }
 function StatusDot({status}:{status:string}){return <i className={`status-dot ${status}`}/>}function goalOf(run:AgentRun){return String(run.request_json?.summary||run.request_json?.goal||"Agent 请求")}
 function stepLabel(value:string){return ({resolve_capabilities:"解析可用能力",decision:"模型决策",policy:"策略检查",execute:"工具执行",await_approval:"等待审批",finish:"生成结果"} as Record<string,string>)[value]||value;}
+function runErrorLabel(value?:string){return ({DECISION_FAILED:"模型决策失败",DECISION_INVALID:"模型执行计划未通过安全校验",MODEL_CALL_FAILED:"模型服务调用失败",RUN_TIMEOUT:"处理超时",WORKER_LEASE_EXPIRED:"Worker 心跳超时"} as Record<string,string>)[value||""]||value||"未知错误";}
+function runStepLabel(value:string){return ({queued_new:"等待处理",queued_resume:"等待恢复",starting:"开始处理",resuming:"恢复执行",finish:"已结束",queued:"等待处理",running:"处理中",waiting_for_approval:"等待审批",completed:"已完成",failed:"失败",cancelled:"已取消"} as Record<string,string>)[value]||value}function stepStatusLabel(value:string){return ({running:"处理中",success:"完成",failed:"失败",cancelled:"已取消"} as Record<string,string>)[value]||value}function actionStatusLabel(value:string){return ({proposed:"已提出",ready:"待执行",waiting_for_approval:"等待审批",approved:"已批准",executing:"执行中",succeeded:"执行成功",verified:"验证通过",failed:"执行失败",denied:"已拒绝",needs_clarification:"需要补充信息",precheck_failed:"前置检查失败",precheck_changed:"执行前状态已变化",rejected:"审批已拒绝",expired:"审批已过期",cancelled:"已取消",approval_invalid:"审批已失效",verification_failed:"验证失败",rolled_back:"已恢复",rollback_failed:"恢复失败",execution_unknown:"执行结果未知"} as Record<string,string>)[value]||value}
 function ExperiencePanel({items,projectId,onChange}:{items:ExperienceItem[];projectId:number;onChange:(x:ExperienceItem[])=>void}){const [saving,setSaving]=useState(false);async function upload(file?:File){if(!file)return;setSaving(true);try{const content=await file.text();const row=await createExperience(projectId,{title:file.name,content,trust_status:"draft",tags:["uploaded"]});onChange([row,...items]);}finally{setSaving(false)}}async function verify(item:ExperienceItem){const row=await updateExperience(item.id,{trust_status:"verified"});onChange(items.map(x=>x.id===row.id?row:x))}async function remove(item:ExperienceItem){if(!window.confirm(`删除经验“${item.title}”？`))return;await deleteExperience(item.id);onChange(items.filter(x=>x.id!==item.id))}return <div className="side-card"><h3>项目经验</h3><label className="upload-line"><input type="file" accept=".md,.txt" onChange={e=>upload(e.target.files?.[0])}/><span>{saving?"保存中":"添加文档"}</span></label>{items.map(x=><div className="doc-row" key={x.id}><span><strong>{x.title}</strong><small>{x.trust_status==="verified"?"已验证":"草稿"} · {x.item_type}</small></span><div>{x.trust_status!=="verified"&&<button className="icon-action" onClick={()=>verify(x)} title="标记为已验证"><BadgeCheck size={15}/></button>}<button className="icon-action" onClick={()=>remove(x)} title="删除经验"><Trash2 size={15}/></button></div></div>)}</div>}
-function ConfigPanel({project,environments,entities,onCollect}:{project:Project|null;environments:Environment[];entities:Entity[];onCollect:()=>void}){const env=environments[0];if(!project)return <div className="side-card"><p className="empty-note">请选择项目。</p></div>;return <div className="side-card config-list"><div className="config-heading"><h3>项目配置</h3><button className="icon-action" onClick={onCollect} title="采集上下文"><RefreshCw size={16}/></button></div><p><span>项目</span><strong>{project.name}</strong></p><p><span>环境</span><strong>{env?.name||"未配置"}</strong></p><p><span>运行时</span><strong>{env?.runtime_type||"未配置"}</strong></p><p><span>工作目录</span><strong>{env?.workdir||"未配置"}</strong></p><p><span>策略</span><strong>{env?.policy_profile||"未配置"}</strong></p><p><span>连接</span><strong>{env?.connection_id?"已引用":"未配置"}</strong></p><p><span>上下文实体</span><strong>{entities.length}</strong></p></div>}
+function ConfigPanel({project,environment,environments,connections,canManage,entities,collectorRuns,onCollect,onCancel,onSaveEnvironment,onDeleteEnvironment,onSaveConnection,onDeleteConnection,onTestConnection}:{project:Project|null;environment:Environment|null;environments:Environment[];connections:Connection[];canManage:boolean;entities:Entity[];collectorRuns:CollectorRun[];onCollect:()=>Promise<void>;onCancel:(id:number)=>Promise<void>;onSaveEnvironment:(payload:EnvironmentPayload,id?:number)=>Promise<void>;onDeleteEnvironment:(item:Environment)=>Promise<void>;onSaveConnection:(payload:ConnectionPayload,id?:number)=>Promise<void>;onDeleteConnection:(item:Connection)=>Promise<void>;onTestConnection:(environmentId:number)=>Promise<void>}){
+  const [editing,setEditing]=useState<Environment|null|"new">(null);
+  const [editingConnection,setEditingConnection]=useState<Connection|null|"new">(null);
+  const active=collectorRuns.some(item=>item.status==="queued"||item.status==="running");
+  if(!project)return <div className="side-card"><p className="empty-note">请选择项目。</p></div>;
+  const needsRuntimeSetup=environment?.runtime_type==="manual"&&!environment.connection_id&&!environment.workdir;
+  return <div className="side-card config-list">
+    <div className="config-heading"><h3>项目配置</h3><div>{canManage&&<button className="icon-action" onClick={()=>setEditing("new")} title="新建运行环境"><Plus size={16}/></button>}<button className="icon-action" disabled={!environment?.connection_id} onClick={()=>environment&&void onTestConnection(environment.id)} title={environment?.connection_id?"测试当前环境的 SSH 连接":"当前环境未关联 SSH 连接"}><Server size={16}/></button><button className={`icon-action ${active?"spinning":""}`} disabled={active||!environment} onClick={()=>void onCollect()} title={active?"上下文采集中":"采集上下文"}><RefreshCw size={16}/></button></div></div>
+    {needsRuntimeSetup&&<div className="setup-guide"><CircleHelp size={17}/><span>当前项目只有默认手动环境。如需连接服务器，请先创建 SSH 连接，再点击项目配置右上角的“+”新建运行环境并关联该连接。</span></div>}
+    <p><span>项目</span><strong>{project.name}</strong></p><p><span>环境</span><strong>{environment?.name||"未配置"}</strong></p><p><span>运行时</span><strong>{runtimeLabel(environment?.runtime_type)}</strong></p><p><span>工作目录</span><strong>{environment?.workdir||"未配置"}</strong></p><p><span>策略</span><strong>{policyLabel(environment?.policy_profile)}</strong></p><p><span>连接</span><strong>{connectionLabel(environment?.connection_id,connections)}</strong></p><p><span>上下文实体</span><strong>{entities.length}</strong></p>
+    {canManage&&<section className="environment-admin"><div className="config-subheading"><h4>运行环境</h4></div>{environments.map(item=><div className="environment-row" key={item.id}><span><strong>{item.name}{item.is_default&&<em>默认</em>}</strong><small>{runtimeLabel(item.runtime_type)} · {policyLabel(item.policy_profile)}</small></span><div><button className="icon-action" onClick={()=>setEditing(item)} title="编辑环境"><Edit3 size={15}/></button><button className="icon-action danger" onClick={()=>void onDeleteEnvironment(item)} title="删除环境"><Trash2 size={15}/></button></div></div>)}</section>}
+    {editing&&<EnvironmentEditor item={editing==="new"?null:editing} connections={connections} onCancel={()=>setEditing(null)} onSave={async payload=>{await onSaveEnvironment(payload,editing==="new"?undefined:editing.id);setEditing(null);}}/>}
+    {canManage&&<section className="environment-admin"><div className="config-subheading"><h4>SSH 连接</h4><button className="icon-action" onClick={()=>setEditingConnection("new")} title="新建连接"><Plus size={15}/></button></div><div className="config-scope-note">连接属于当前账号，可被多个项目复用；只有当前运行环境明确选择的连接才会用于执行。</div>{connections.map(item=><div className="environment-row" key={item.id}><span><strong><Server size={13}/>{item.name}{item.id===environment?.connection_id&&<em>当前环境</em>}</strong><small>{item.username?`${item.username}@`:""}{item.host||"未配置主机"}:{item.port||22} · {item.host_fingerprint_configured?"已校验主机":"未登记指纹"}</small></span><div><button className="icon-action" onClick={()=>setEditingConnection(item)} title="编辑连接"><Edit3 size={15}/></button><button className="icon-action danger" onClick={()=>void onDeleteConnection(item)} title="删除连接"><Trash2 size={15}/></button></div></div>)}</section>}
+    {editingConnection&&<ConnectionEditor item={editingConnection==="new"?null:editingConnection} onCancel={()=>setEditingConnection(null)} onSave={async payload=>{await onSaveConnection(payload,editingConnection==="new"?undefined:editingConnection.id);setEditingConnection(null);}}/>}
+    {collectorRuns.length>0&&<section className="collector-list"><h4>最近采集</h4>{collectorRuns.slice(0,6).map(item=><div className="collector-row" key={item.id}><StatusDot status={item.status}/><span><strong>{collectorLabel(item.collector_name)}</strong><small>{collectorStatus(item.cancel_requested_at&&item.status==="running"?"cancelling":item.status)}{item.error_message?` · ${item.error_message}`:""}</small></span>{(item.status==="queued"||item.status==="running")&&!item.cancel_requested_at&&<button className="icon-action" onClick={()=>void onCancel(item.id)} title="取消采集"><XCircle size={15}/></button>}</div>)}</section>}
+  </div>
+}
+
+function EnvironmentEditor({item,connections,onCancel,onSave}:{item:Environment|null;connections:Connection[];onCancel:()=>void;onSave:(payload:EnvironmentPayload)=>Promise<void>}){
+  const [name,setName]=useState(item?.name||"");
+  const [runtime,setRuntime]=useState(item?.runtime_type||"docker_compose");
+  const [connectionId,setConnectionId]=useState(item?.connection_id?String(item.connection_id):"");
+  const [workdir,setWorkdir]=useState(item?.workdir||"");
+  const [namespace,setNamespace]=useState(item?.namespace||"");
+  const [policy,setPolicy]=useState(item?.policy_profile||"development");
+  const [composeFile,setComposeFile]=useState(String(item?.config_json?.compose_file||"docker-compose.yml"));
+  const [isDefault,setIsDefault]=useState(item?.is_default??false);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState("");
+  const connectionRequired=runtime!=="manual";
+  const workdirRequired=runtime==="docker_compose"||runtime==="mixed";
+  async function submitEditor(event:FormEvent){event.preventDefault();if(!name.trim()||saving)return;setSaving(true);setError("");try{const config={...(item?.config_json||{})};if(runtime==="docker_compose"||runtime==="mixed")config.compose_file=composeFile.trim()||"docker-compose.yml";await onSave({name:name.trim(),runtime_type:runtime,connection_id:connectionId?Number(connectionId):null,workdir:workdir.trim()||null,namespace:namespace.trim()||null,config_json:config,policy_profile:policy,is_default:isDefault});}catch(value){setError(value instanceof Error?value.message:"环境保存失败");}finally{setSaving(false);}}
+  return <form className="environment-editor" onSubmit={submitEditor}>
+    <div className="editor-title"><strong>{item?"编辑环境":"新建环境"}</strong><button type="button" className="icon-action" onClick={onCancel} title="关闭"><XCircle size={16}/></button></div>
+    <label><FieldLabel text="名称" required help="项目内的环境名称，例如 local、staging 或 production。"/><input value={name} onChange={event=>setName(event.target.value)} maxLength={80} required/></label>
+    <label><FieldLabel text="运行时" required help="选择目标真实采用的运行方式，Agent 会据此构造 Docker Compose、Kubernetes 或 systemd 命令。"/><select value={runtime} disabled={Boolean(item)} onChange={event=>setRuntime(event.target.value)} required><option value="docker_compose">Docker Compose</option><option value="kubernetes">Kubernetes</option><option value="systemd">systemd</option><option value="manual">手动配置</option><option value="mixed">混合运行时</option></select></label>
+    <label><FieldLabel text="连接" required={connectionRequired} help="选择已登记的 SSH 连接，例如 production-server。手动环境可以不关联连接。"/><select value={connectionId} onChange={event=>setConnectionId(event.target.value)} required={connectionRequired}><option value="">{connectionRequired?"请选择 SSH 连接":"不使用连接"}</option>{connections.map(connection=><option key={connection.id} value={connection.id}>{connection.name} · {connection.host||"未配置主机"}</option>)}</select></label>
+    <label><FieldLabel text="工作目录" required={workdirRequired} help="目标服务器上的绝对目录。Docker Compose 示例：/srv/my-project，该目录内应存在 Compose 文件。"/><input value={workdir} onChange={event=>setWorkdir(event.target.value)} placeholder="/srv/my-project" required={workdirRequired}/></label>
+    {runtime==="kubernetes"&&<label><FieldLabel text="命名空间" help="Kubernetes Namespace，例如 default 或 production；留空时使用 default。"/><input value={namespace} onChange={event=>setNamespace(event.target.value)} placeholder="default"/></label>}
+    {(runtime==="docker_compose"||runtime==="mixed")&&<label><FieldLabel text="Compose 文件" required help="相对于工作目录的文件名，例如 docker-compose.yml 或 deploy/compose.prod.yml，不能填写绝对路径。"/><input value={composeFile} onChange={event=>setComposeFile(event.target.value)} placeholder="docker-compose.yml" required/></label>}
+    <label><FieldLabel text="策略" required help="决定变更审批强度。生产环境请选择“生产”，本地开发可选择“开发”。"/><select value={policy} onChange={event=>setPolicy(event.target.value)} required><option value="development">开发</option><option value="test">测试</option><option value="staging">预发布</option><option value="production">生产</option></select></label>
+    <label className="default-check"><input type="checkbox" checked={isDefault} onChange={event=>setIsDefault(event.target.checked)}/><span>设为默认环境</span></label>
+    {error&&<p className="editor-error">{error}</p>}<div className="editor-actions"><button type="button" onClick={onCancel}>取消</button><button className="primary" disabled={saving}>{saving?"保存中":"保存"}</button></div>{item&&<small className="editor-note">如需更换运行时，请新建环境后停用旧环境，避免破坏已有执行快照。</small>}
+  </form>
+}
+
+function ConnectionEditor({item,onCancel,onSave}:{item:Connection|null;onCancel:()=>void;onSave:(payload:ConnectionPayload)=>Promise<void>}){
+  const [name,setName]=useState(item?.name||"");
+  const [host,setHost]=useState(item?.host||"");
+  const [port,setPort]=useState(String(item?.port||22));
+  const [username,setUsername]=useState(item?.username||"opsagent");
+  const [credentialRef,setCredentialRef]=useState("");
+  const [fingerprint,setFingerprint]=useState("");
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState("");
+  async function submitConnection(event:FormEvent){event.preventDefault();if(!name.trim()||!host.trim()||saving)return;setSaving(true);setError("");try{const payload:ConnectionPayload={name:name.trim(),connection_type:"ssh",host:host.trim(),port:Number(port)||22,username:username.trim()||null,config_json:item?.config_json||{}};if(credentialRef.trim())payload.credential_ref=credentialRef.trim();if(fingerprint.trim())payload.host_fingerprint=fingerprint.trim();await onSave(payload);}catch(value){setError(value instanceof Error?value.message:"连接保存失败");}finally{setSaving(false);}}
+  return <form className="environment-editor" onSubmit={submitConnection}>
+    <div className="editor-title"><strong>{item?"编辑连接":"新建连接"}</strong><button type="button" className="icon-action" onClick={onCancel} title="关闭"><XCircle size={16}/></button></div>
+    <SSHSetupGuide name={name} host={host} port={port} username={username} credentialRef={credentialRef}/>
+    <label><FieldLabel text="名称" required help="本系统内的连接名称，例如 production-server 或 office-wsl。"/><input value={name} onChange={event=>setName(event.target.value)} maxLength={120} required/></label>
+    <label><FieldLabel text="主机" required help="Backend 和 Worker 容器能够访问的 SSH 地址。例如远程服务器 10.0.0.12；连接当前 WSL 宿主可使用 host.docker.internal。"/><input value={host} onChange={event=>setHost(event.target.value)} placeholder="10.0.0.12" required/></label>
+    <label><FieldLabel text="端口" required help="目标服务器的 SSH 端口，通常为 22。"/><input type="number" min="1" max="65535" value={port} onChange={event=>setPort(event.target.value)} required/></label>
+    <label><FieldLabel text="用户名" required help="目标服务器上已经存在的低权限账号，例如 opsagent。系统不会自动创建该用户。"/><input value={username} onChange={event=>setUsername(event.target.value)} placeholder="opsagent" required/></label>
+    <label><FieldLabel text="私钥引用" required help="填写容器内私钥文件路径，不是密钥内容或宿主机路径。例如把私钥放入项目 secrets 目录后填写 /run/secrets/project_a_ed25519。"/><input value={credentialRef} onChange={event=>setCredentialRef(event.target.value)} placeholder={item?.credential_configured?"已配置；留空表示不修改":"/run/secrets/project_a_ed25519"} required={!item?.credential_configured}/></label>
+    <label><FieldLabel text="Host Key 指纹" required help="填写目标 SSH 服务器主机公钥的 SHA256 指纹，不是文件路径。例如 SHA256:AbCd...；应通过可信渠道核对。"/><input value={fingerprint} onChange={event=>setFingerprint(event.target.value)} placeholder={item?.host_fingerprint_configured?"已配置；留空表示不修改":"SHA256:AbCdEf..."} required={!item?.host_fingerprint_configured}/></label>
+    {error&&<p className="editor-error">{error}</p>}<div className="editor-actions"><button type="button" onClick={onCancel}>取消</button><button className="primary" disabled={saving}>{saving?"保存中":"保存"}</button></div><small className="editor-note">私钥文件必须由部署者挂载到 Backend 和 Worker 的 `/run/secrets`；浏览器只保存引用路径，不读取或上传密钥内容。</small>
+  </form>
+}
+
+function SSHSetupGuide({name,host,port,username,credentialRef}:{name:string;host:string;port:string;username:string;credentialRef:string}){
+  const [copied,setCopied]=useState<number|null>(null);
+  const safeName=(name.trim()||"project-server").toLowerCase().replace(/[^a-z0-9_-]+/g,"-").replace(/^-+|-+$/g,"")||"project-server";
+  const containerKeyPath=credentialRef.trim()||`/run/secrets/${safeName}_ed25519`;
+  const keyFile=containerKeyPath.split("/").filter(Boolean).pop()||`${safeName}_ed25519`;
+  const hostKeyPath=`secrets/${keyFile}`;
+  const targetHost=host.trim()||"10.0.0.12";
+  const shellHost=targetHost==="host.docker.internal"?"127.0.0.1":targetHost;
+  const targetPort=String(Number(port)||22);
+  const targetUser=username.trim()||"opsagent";
+  const destination=`${targetUser}@${shellHost}`;
+  const steps=[
+    {title:"准备目标服务器用户",where:"目标服务器",description:"可使用已有低权限账号；如需专用账号，由服务器管理员执行。",command:`id -u -- ${shellQuote(targetUser)} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -- ${shellQuote(targetUser)}`},
+    {title:"生成 Agent 专用密钥",where:"Ops Agent 项目根目录",description:"私钥只保留在 Ops Agent 服务器的 secrets 目录，不要上传到目标服务器或 Git。",command:`mkdir -p secrets\nssh-keygen -t ed25519 -f ${shellQuote(hostKeyPath)} -N '' -C ${shellQuote(`ops-agent-${safeName}`)}\nchmod 600 ${shellQuote(hostKeyPath)}`},
+    {title:"安装公钥",where:"Ops Agent 所在主机",description:targetHost==="host.docker.internal"?"当前配置连接 WSL 宿主；在 WSL Shell 中安装公钥时使用 127.0.0.1。":"首次安装需要目标账号密码，或由服务器管理员写入 authorized_keys。",command:`ssh-copy-id -i ${shellQuote(`${hostKeyPath}.pub`)} -p ${shellQuote(targetPort)} ${shellQuote(destination)}`},
+    {title:"获取 Host Key 指纹",where:"目标服务器可信终端",description:"这是服务器已有主机公钥的 SHA256 指纹，不是重新生成 Host Key。将输出中的 SHA256:... 填入表单。",command:"sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256"},
+    {title:"验证密钥登录",where:"Ops Agent 所在主机",description:"确认可以免密登录后退出；测试命令不会执行项目操作。",command:`ssh -i ${shellQuote(hostKeyPath)} -p ${shellQuote(targetPort)} ${shellQuote(destination)}`},
+  ];
+  async function copyCommand(command:string,index:number){try{await navigator.clipboard.writeText(command);setCopied(index);window.setTimeout(()=>setCopied(value=>value===index?null:value),1600);}catch{setCopied(null);}}
+  return <details className="ssh-guide">
+    <summary><span><KeyRound size={16}/><strong>SSH 配置指南</strong></span><small>生成密钥、安装公钥并获取指纹</small></summary>
+    <div className="ssh-guide-body">
+      <div className="ssh-guide-callout"><CircleHelp size={15}/><span>系统不会创建远程用户，也不会从浏览器上传私钥。请按顺序完成准备工作，保存连接后新建运行环境并关联该连接，最后在项目配置顶部测试 SSH。</span></div>
+      <ol>{steps.map((step,index)=><li key={step.title}>
+        <div className="ssh-step-heading"><span>{index+1}</span><div><strong>{step.title}</strong><small>{step.where}</small></div></div>
+        <p>{step.description}</p>
+        <div className="ssh-command"><code>{step.command}</code><button type="button" onClick={()=>void copyCommand(step.command,index)} aria-label={`复制${step.title}命令`} title="复制命令">{copied===index?<Check size={14}/>:<Copy size={14}/>}</button></div>
+      </li>)}</ol>
+      <div className="ssh-guide-values"><span>表单中的私钥引用填写</span><code>{containerKeyPath}</code><span>Host Key 指纹填写命令输出中的</span><code>SHA256:...</code></div>
+    </div>
+  </details>
+}
+
+function shellQuote(value:string){return `'${value.replace(/'/g,"'\\\"'\\\"'")}'`}
+function FieldLabel({text,required=false,help}:{text:string;required?:boolean;help:string}){return <span className="field-label"><span>{text}{required&&<em aria-hidden="true">*</em>}</span><button type="button" className="field-help" aria-label={`${text}填写说明`} title={help}><CircleHelp size={14}/><span role="tooltip">{help}</span></button></span>}
+function runtimeLabel(value?:string){return ({docker_compose:"Docker Compose",kubernetes:"Kubernetes",systemd:"systemd",manual:"手动配置",mixed:"混合运行时"} as Record<string,string>)[value||""]||value||"未配置"}function policyLabel(value?:string){return ({development:"开发",test:"测试",staging:"预发布",production:"生产"} as Record<string,string>)[value||""]||value||"未配置"}function connectionLabel(id:number|null|undefined,items:Connection[]){if(!id)return "未配置";const item=items.find(value=>value.id===id);return item?`${item.name} · ${item.host||"未配置主机"}`:`已登记连接 #${id}`}function collectorLabel(value:string){return ({manual:"手动配置",docker_compose:"Docker Compose",kubernetes:"Kubernetes",systemd:"systemd",nginx:"Nginx",project_file:"项目文件"} as Record<string,string>)[value]||value}function collectorStatus(value:string){return ({queued:"等待执行",running:"采集中",cancelling:"正在取消",completed:"已完成",failed:"失败",cancelled:"已取消"} as Record<string,string>)[value]||value}
 function sortProjects(rows:Project[]){return [...rows].sort((a,b)=>Number(b.is_pinned)-Number(a.is_pinned)||a.name.localeCompare(b.name))}function sortSessions(rows:ChatSession[]){return [...rows].sort((a,b)=>Number(b.is_pinned)-Number(a.is_pinned)||(b.updated_at||"").localeCompare(a.updated_at||""))}

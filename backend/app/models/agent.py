@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -9,12 +9,17 @@ from app.core.database import Base
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "session_id", "client_request_id", name="uq_agent_run_client_request"),
+        CheckConstraint("status IN ('created','queued','running','waiting_for_approval','completed','failed','cancelled')", name="ck_agent_run_status"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("chat_sessions.id"), index=True)
     user_message_id: Mapped[int] = mapped_column(ForeignKey("chat_messages.id"), index=True)
     assistant_message_id: Mapped[int | None] = mapped_column(ForeignKey("chat_messages.id"), nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     environment_id: Mapped[int | None] = mapped_column(ForeignKey("environments.id"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(40), default="created", index=True)

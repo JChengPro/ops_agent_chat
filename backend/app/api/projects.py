@@ -1,15 +1,16 @@
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, ValidationError, field_validator, model_validator
-from sqlalchemy import or_, select, update
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_environment, require_environment_permission, require_project, require_project_permission
 from app.context.collectors.manual import collect_manual_services
-from app.context.collectors.registry import collectors_for
+from app.context.jobs import collector_run_out, queue_environment_collectors
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.context import CollectorRun
@@ -261,10 +262,25 @@ def patch_environment(environment_id: int, payload: EnvironmentPatch, db: Sessio
 
 @router.delete("/environments/{environment_id}")
 def delete_environment(environment_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    row = require_environment_permission(db, user, environment_id, "project.manage"); was_default = row.is_default; row.is_active = False; row.is_default = False
+    row = require_environment_permission(db, user, environment_id, "project.manage")
+    replacement = db.scalar(
+        select(Environment)
+        .where(
+            Environment.project_id == row.project_id,
+            Environment.id != row.id,
+            Environment.is_active.is_(True),
+        )
+        .order_by(Environment.updated_at.desc())
+        .limit(1)
+    )
+    if not replacement:
+        raise HTTPException(409, "A project must keep at least one active environment")
+    was_default = row.is_default; row.is_active = False; row.is_default = False
+    # Flush the old default first so the partial unique index never observes two
+    # active defaults during the replacement update.
+    db.flush()
     if was_default:
-        replacement = db.scalar(select(Environment).where(Environment.project_id == row.project_id, Environment.id != row.id, Environment.is_active.is_(True)).order_by(Environment.updated_at.desc()).limit(1))
-        if replacement: replacement.is_default = True
+        replacement.is_default = True
     db.commit(); return environment_out(row)
 
 
@@ -275,16 +291,41 @@ def test_connection(environment_id: int, db: Session = Depends(get_db), user: Us
     ok, message = SSHTransport().test_connection(connection); connection.status = "connected" if ok else "failed"; db.commit(); return {"ok": ok, "message": message}
 
 
-@router.post("/environments/{environment_id}/collect-context")
+@router.post("/environments/{environment_id}/collect-context", status_code=202)
 def collect_context(environment_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    row = require_environment(db, user, environment_id); manual = collect_manual_services(db, row); runs = [manual]
-    if row.connection_id:
-        connection = db.get(Connection, row.connection_id)
-        runs.extend(collector.collect(db, row, connection) for collector in collectors_for(row))
-    db.commit(); return [{"id": item.id, "collector_name": item.collector_name, "status": item.status, "summary_json": item.summary_json, "error_message": item.error_message} for item in runs]
+    row = require_environment_permission(db, user, environment_id, "project.manage")
+    return [collector_run_out(item) for item in queue_environment_collectors(db, row, user.id)]
 
 
 @router.get("/environments/{environment_id}/collector-runs")
 def collector_runs(environment_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     require_environment(db, user, environment_id)
-    return db.execute(select(CollectorRun).where(CollectorRun.environment_id == environment_id).order_by(CollectorRun.created_at.desc())).scalars().all()
+    return [collector_run_out(item) for item in db.scalars(select(CollectorRun).where(CollectorRun.environment_id == environment_id).order_by(CollectorRun.created_at.desc()).limit(100)).all()]
+
+
+@router.post("/collector-runs/{run_id}/cancel")
+def cancel_collector_run(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    run = db.get(CollectorRun, run_id)
+    if not run:
+        raise HTTPException(404, "Collector run not found")
+    require_environment_permission(db, user, run.environment_id, "project.manage")
+    if run.status in {"completed", "failed", "cancelled"}:
+        return collector_run_out(run)
+    now = datetime.now(timezone.utc)
+    claimed = db.scalar(
+        update(CollectorRun)
+        .where(CollectorRun.id == run.id, CollectorRun.status.in_(["queued", "running"]))
+        .values(
+            cancel_requested_at=now,
+            status=case((CollectorRun.status == "queued", "cancelled"), else_=CollectorRun.status),
+            finished_at=case((CollectorRun.status == "queued", now), else_=CollectorRun.finished_at),
+            lease_owner=case((CollectorRun.status == "queued", None), else_=CollectorRun.lease_owner),
+            lease_expires_at=case((CollectorRun.status == "queued", None), else_=CollectorRun.lease_expires_at),
+        )
+        .returning(CollectorRun.id)
+    )
+    db.commit()
+    if not claimed:
+        db.expire(run)
+    db.refresh(run)
+    return collector_run_out(run)

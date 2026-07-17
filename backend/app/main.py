@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres import PostgresSaver
 
@@ -53,7 +52,10 @@ async def http_error(request: Request, exc: HTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
     del request
-    details = jsonable_encoder(exc.errors(), custom_encoder={ValueError: str})
+    details = []
+    for error in exc.errors():
+        safe = {key: value for key, value in error.items() if key not in {"input", "ctx", "url"}}
+        details.append(safe)
     return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_ERROR", "message": "Request validation failed", "details": details}})
 
 
@@ -72,7 +74,7 @@ def ready(request: Request, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=503, detail="Database is not ready") from exc
     if not agent_ready:
         raise HTTPException(status_code=503, detail="Agent graph is not ready")
-    if settings.llm_provider == "deepseek" and not settings.deepseek_api_key:
+    if not settings.llm_configured:
         raise HTTPException(status_code=503, detail="LLM provider is not configured")
     worker_cutoff = datetime.now(timezone.utc) - timedelta(seconds=15)
     worker_ready = db.scalar(select(AgentWorker.id).where(AgentWorker.status == "running", AgentWorker.last_seen_at >= worker_cutoff).limit(1))

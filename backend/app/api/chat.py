@@ -26,6 +26,7 @@ class SessionPatch(BaseModel):
 
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=20000)
+    client_request_id: str | None = Field(default=None, min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
 
 
 def session_out(item: ChatSession) -> dict:
@@ -82,7 +83,7 @@ def messages(session_id: int, db: Session = Depends(get_db), user: User = Depend
     return [message_out(item) for item in db.scalars(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at, ChatMessage.id)).all()]
 
 
-@router.post("/chat-sessions/{session_id}/messages")
+@router.post("/chat-sessions/{session_id}/messages", deprecated=True)
 def send_message(session_id: int, payload: MessageCreate, response: Response, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     session = db.get(ChatSession, session_id)
     if not session or session.user_id != user.id or session.status == "deleted": raise HTTPException(404, "Chat session not found")
@@ -92,7 +93,10 @@ def send_message(session_id: int, payload: MessageCreate, response: Response, db
         if not environment or not environment.is_active or environment.project_id != session.project_id:
             raise HTTPException(409, "The chat environment is no longer active")
     response.status_code = status.HTTP_202_ACCEPTED
-    return create_run(db, session, user.id, payload.content)
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
+    response.headers["Link"] = f'</api/chat-sessions/{session_id}/agent-runs>; rel="successor-version"'
+    return create_run(db, session, user.id, payload.content, payload.client_request_id)
 
 
 @router.post("/chat-sessions/{session_id}/agent-runs")
@@ -106,4 +110,4 @@ def queue_message(session_id: int, payload: MessageCreate, response: Response, d
         if not environment or not environment.is_active or environment.project_id != session.project_id:
             raise HTTPException(409, "The chat environment is no longer active")
     response.status_code = status.HTTP_202_ACCEPTED
-    return create_run(db, session, user.id, payload.content)
+    return create_run(db, session, user.id, payload.content, payload.client_request_id)

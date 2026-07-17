@@ -1,3 +1,5 @@
+import hashlib
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -10,6 +12,7 @@ from sqlalchemy.exc import ProgrammingError
 
 from app.agent.service import _persist_result, claim_run, create_run, process_claimed_run, recover_expired_runs
 from app.audit.service import append_audit_event, verify_audit_chain
+from app.capabilities.registry import registry
 from app.core.config import Settings
 from app.core.database import SessionLocal
 from app.core.security import create_access_token, hash_password
@@ -67,6 +70,13 @@ def test_login_lockout_and_inactive_user_rejection(client: TestClient):
     assert client.post("/api/auth/login", json={"username": inactive.username, "password": "correct-password"}).status_code == 401
 
 
+def test_validation_error_never_echoes_login_password(client: TestClient):
+    secret = "must-never-appear-in-response"
+    response = client.post("/api/auth/login", json={"password": secret})
+    assert response.status_code == 422
+    assert secret not in response.text
+
+
 def test_health_checks_dependencies_and_reports_consistent_version(client: TestClient):
     with SessionLocal() as db:
         db.execute(delete(AgentWorker))
@@ -92,6 +102,33 @@ def test_production_settings_reject_unsafe_defaults():
             database_url="postgresql+psycopg://opsagent:opsagent_password@db/ops",
             DEEPSEEK_API_KEY="",
             SSH_STRICT_HOST_KEY_CHECKING=False,
+        )
+
+
+def test_llm_placeholder_key_is_not_reported_as_configured():
+    placeholder = Settings(_env_file=None, DEEPSEEK_API_KEY="replace-with-your-deepseek-api-key")
+    configured = Settings(_env_file=None, DEEPSEEK_API_KEY="test-non-placeholder-key")
+    assert placeholder.llm_configured is False
+    assert configured.llm_configured is True
+
+
+def test_default_agent_budget_allows_fifty_tool_calls():
+    settings = Settings(_env_file=None)
+    assert settings.agent_max_tool_calls == 50
+    assert settings.agent_max_steps == 120
+
+
+def test_production_requires_api_key_for_any_provider_label():
+    with pytest.raises(ValueError, match="LLM API key"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            APP_SECRET_KEY="a-secure-application-secret-with-32-characters",
+            admin_password="non-default-admin-password",
+            database_url="postgresql+psycopg://opsagent:secure@db/ops",
+            LLM_PROVIDER="openai-compatible",
+            DEEPSEEK_API_KEY="",
+            SSH_STRICT_HOST_KEY_CHECKING=True,
         )
 
 
@@ -121,6 +158,53 @@ def test_environment_api_enforces_schema_and_single_default(client: TestClient):
         json={"runtime_type": "manual"},
     )
     assert switched.status_code == 422
+    assert client.delete(f"/api/environments/{second.json()['id']}", headers=headers).status_code == 200
+    remaining = next(item for item in environments if item["id"] != second.json()["id"])
+    assert client.delete(f"/api/environments/{remaining['id']}", headers=headers).status_code == 409
+
+
+def test_connection_reference_is_redacted_and_cannot_be_deleted_while_in_use(client: TestClient):
+    user = create_user(role="admin")
+    headers = bearer(user)
+    connection = client.post(
+        "/api/connections",
+        headers=headers,
+        json={
+            "name": "test-ssh",
+            "connection_type": "ssh",
+            "host": "host.docker.internal",
+            "port": 22,
+            "username": "opsagent",
+            "credential_ref": "/run/secrets/test_ssh_key",
+            "host_fingerprint": "SHA256:test-fingerprint",
+        },
+    )
+    assert connection.status_code == 200
+    connection_payload = connection.json()
+    assert connection_payload["credential_configured"] is True
+    assert connection_payload["host_fingerprint_configured"] is True
+    assert "credential_ref" not in connection_payload and "host_fingerprint" not in connection_payload
+
+    project = client.post("/api/projects", headers=headers, json={"name": f"connection-{uuid4().hex[:8]}"}).json()
+    environment = client.get(f"/api/projects/{project['id']}/environments", headers=headers).json()[0]
+    configured = client.patch(
+        f"/api/environments/{environment['id']}",
+        headers=headers,
+        json={
+            "runtime_type": "docker_compose",
+            "connection_id": connection_payload["id"],
+            "workdir": "/srv/project",
+            "config_json": {"compose_file": "docker-compose.yml"},
+        },
+    )
+    assert configured.status_code == 200
+    assert client.delete(f"/api/connections/{connection_payload['id']}", headers=headers).status_code == 409
+    assert client.patch(
+        f"/api/environments/{environment['id']}",
+        headers=headers,
+        json={"connection_id": None},
+    ).status_code == 200
+    assert client.delete(f"/api/connections/{connection_payload['id']}", headers=headers).status_code == 200
 
 
 def test_approver_membership_is_visible_in_pending_list(client: TestClient):
@@ -137,7 +221,7 @@ def test_approver_membership_is_visible_in_pending_list(client: TestClient):
         db.add(message); db.flush()
         run = AgentRun(id=str(uuid4()), session_id=session.id, user_message_id=message.id, user_id=owner.id, project_id=project.id, environment_id=environment.id, status="waiting_for_approval")
         db.add(run); db.flush()
-        action = Action(id=str(uuid4()), run_id=run.id, capability_name="service.restart", capability_version="final-1", project_id=project.id, environment_id=environment.id, target_json={"name": "backend"}, arguments_json={"service": "backend"}, resolved_spec_json={}, rollback_spec_json={"kind": "capability", "capability": "service.start"}, effect="change", action_hash="a" * 64, status="waiting_for_approval")
+        action = Action(id=str(uuid4()), run_id=run.id, capability_name="service.restart", capability_version="final-1", capability_definition_hash=registry.definition_hash("service.restart", "final-1"), project_id=project.id, environment_id=environment.id, target_json={"name": "backend"}, arguments_json={"service": "backend"}, resolved_spec_json={}, rollback_spec_json={"kind": "capability", "capability": "service.start"}, effect="change", action_hash="a" * 64, status="waiting_for_approval")
         db.add(action); db.flush()
         approval = Approval(id=str(uuid4()), action_id=action.id, action_hash=action.action_hash, requested_from=owner.id, decision="pending", impact_summary="将重启 backend。", risk_summary="服务可能短暂不可用。", expires_at=datetime.now(timezone.utc) + timedelta(minutes=10))
         db.add(approval); db.commit()
@@ -145,6 +229,72 @@ def test_approver_membership_is_visible_in_pending_list(client: TestClient):
     response = client.get("/api/approvals", headers=bearer(approver))
     assert response.status_code == 200
     assert approval_id in {item["id"] for item in response.json()}
+
+
+def test_cancelled_run_cannot_be_approved_afterwards(client: TestClient):
+    user = create_user()
+    with SessionLocal() as db:
+        session = ChatSession(project_id=None, environment_id=None, user_id=user.id, title="cancel-approval")
+        db.add(session)
+        db.flush()
+        message = ChatMessage(session_id=session.id, project_id=None, role="user", content="change")
+        db.add(message)
+        db.flush()
+        run = AgentRun(
+            id=str(uuid4()),
+            session_id=session.id,
+            user_message_id=message.id,
+            user_id=user.id,
+            status="waiting_for_approval",
+        )
+        db.add(run)
+        db.flush()
+        action = Action(
+            id=str(uuid4()),
+            run_id=run.id,
+            capability_name="service.restart",
+            capability_version="final-1",
+            capability_definition_hash=registry.definition_hash("service.restart", "final-1"),
+            project_id=None,
+            environment_id=None,
+            target_json={"name": "backend"},
+            arguments_json={"service": "backend"},
+            resolved_spec_json={},
+            rollback_spec_json={},
+            effect="change",
+            action_hash="d" * 64,
+            status="waiting_for_approval",
+        )
+        db.add(action)
+        db.flush()
+        approval = Approval(
+            id=str(uuid4()),
+            action_id=action.id,
+            action_hash=action.action_hash,
+            requested_from=user.id,
+            decision="pending",
+            impact_summary="Change backend state.",
+            risk_summary="Backend may be unavailable.",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+        db.add(approval)
+        db.commit()
+        run_id = run.id
+        action_id = action.id
+        approval_id = approval.id
+
+    headers = bearer(user)
+    assert client.post(f"/api/agent-runs/{run_id}/cancel", headers=headers).status_code == 200
+    response = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        headers=headers,
+        json={"action_hash": "d" * 64},
+    )
+    assert response.status_code == 409
+    with SessionLocal() as db:
+        assert db.get(AgentRun, run_id).status == "cancelled"
+        assert db.get(Action, action_id).status == "cancelled"
+        assert db.get(Approval, approval_id).decision == "cancelled"
 
 
 def test_worker_claim_is_single_owner_and_graph_exception_is_terminal():
@@ -163,6 +313,45 @@ def test_worker_claim_is_single_owner_and_graph_exception_is_terminal():
         result = process_claimed_run(db, failing, db.get(AgentRun, run_id), "worker-a")
         assert result["run_summary"]["status"] == "failed"
         assert result["assistant_message"]["content"].startswith("本次处理执行失败")
+
+
+def test_late_worker_exception_does_not_overwrite_lease_expiry_reason():
+    user = create_user()
+    with SessionLocal() as db:
+        session = ChatSession(project_id=None, environment_id=None, user_id=user.id, title="late-worker-error")
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        queued = create_run(db, session, user.id, "slow task")
+        run = claim_run(db, "expired-worker", queued["run_summary"]["id"])
+        run_id = run.id
+
+    with SessionLocal() as recovery_db:
+        recovery_db.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id, AgentRun.status == "running")
+            .values(
+                status="failed",
+                error_code="WORKER_LEASE_EXPIRED",
+                error_message="lease expired",
+                completed_at=datetime.now(timezone.utc),
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+        )
+        recovery_db.commit()
+
+    failing = SimpleNamespace(
+        graph=SimpleNamespace(
+            invoke=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("late worker failure"))
+        )
+    )
+    with SessionLocal() as db:
+        result = process_claimed_run(db, failing, db.get(AgentRun, run_id), "expired-worker")
+        run = db.get(AgentRun, run_id)
+        assert result["run_summary"]["status"] == "failed"
+        assert run.error_code == "WORKER_LEASE_EXPIRED"
+        assert "没有自动重放任务" in result["assistant_message"]["content"]
 
 
 def test_http_execute_compatibility_endpoint_never_runs_the_graph(client: TestClient):
@@ -197,6 +386,46 @@ def test_cancelling_a_queued_run_creates_a_terminal_assistant_message(client: Te
     assert messages[-1]["content"] == "本次处理已取消。"
 
 
+def test_cancelling_a_running_run_marks_inflight_action_unknown(client: TestClient):
+    user = create_user()
+    with SessionLocal() as db:
+        session = ChatSession(project_id=None, environment_id=None, user_id=user.id, title="cancel-running")
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        queued = create_run(db, session, user.id, "cancel during execution")
+        run = db.get(AgentRun, queued["run_summary"]["id"])
+        run.status = "running"
+        run.lease_owner = "cancel-test-worker"
+        action = Action(
+            id=str(uuid4()),
+            run_id=run.id,
+            capability_name="service.status",
+            capability_version="final-1",
+            capability_definition_hash=registry.definition_hash("service.status", "final-1"),
+            project_id=None,
+            environment_id=None,
+            target_json={},
+            arguments_json={"service": "backend"},
+            resolved_spec_json={},
+            rollback_spec_json={},
+            effect="read",
+            action_hash="c" * 64,
+            status="executing",
+            execution_token=str(uuid4()),
+            execution_started_at=datetime.now(timezone.utc),
+        )
+        db.add(action)
+        db.commit()
+        run_id = run.id
+        action_id = action.id
+
+    response = client.post(f"/api/agent-runs/{run_id}/cancel", headers=bearer(user))
+    assert response.status_code == 200 and response.json()["status"] == "cancelled"
+    with SessionLocal() as db:
+        assert db.get(Action, action_id).status == "execution_unknown"
+
+
 def test_late_result_cannot_overwrite_cancelled_run():
     user = create_user()
     with SessionLocal() as db:
@@ -224,6 +453,7 @@ def test_expired_worker_lease_is_failed_once_with_a_user_visible_result():
         run.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
         action = Action(
             id=str(uuid4()), run_id=run.id, capability_name="service.status", capability_version="final-1",
+            capability_definition_hash=registry.definition_hash("service.status", "final-1"),
             project_id=None, environment_id=None, target_json={}, arguments_json={}, resolved_spec_json={},
             rollback_spec_json={}, effect="read", action_hash="b" * 64, status="executing",
         )
@@ -297,3 +527,73 @@ def test_audit_chain_verifier_detects_and_reports_tampering():
         db.execute(text("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only"))
         db.commit()
         assert verify_audit_chain(db)["valid"] is True
+
+
+def test_audit_chain_merges_existing_forks_without_mutating_history():
+    with SessionLocal() as db:
+        anchor = append_audit_event(
+            db,
+            actor_type="test",
+            actor_id="tester",
+            event_type="chain.anchor",
+            payload={"value": "anchor"},
+        )
+        db.commit()
+        branch_hashes: list[str] = []
+        for value in ("left", "right"):
+            event_id = str(uuid4())
+            payload = {"value": value}
+            canonical = json.dumps(
+                {
+                    "id": event_id,
+                    "actor_type": "legacy-test",
+                    "actor_id": "legacy-writer",
+                    "event_type": "chain.branch",
+                    "project_id": None,
+                    "environment_id": None,
+                    "run_id": None,
+                    "action_id": None,
+                    "payload": payload,
+                    "previous": anchor.event_hash,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            event_hash = hashlib.sha256(canonical.encode()).hexdigest()
+            db.add(
+                AuditEvent(
+                    id=event_id,
+                    actor_type="legacy-test",
+                    actor_id="legacy-writer",
+                    event_type="chain.branch",
+                    payload_json=payload,
+                    previous_event_hash=anchor.event_hash,
+                    parent_event_hashes_json=[],
+                    hash_version=1,
+                    event_hash=event_hash,
+                )
+            )
+            branch_hashes.append(event_hash)
+        db.commit()
+
+        forked = verify_audit_chain(db)
+        assert forked["valid"] is False
+        assert forked["reason"] == "multiple_heads"
+        assert forked["head_count"] == 2
+
+        merged = append_audit_event(
+            db,
+            actor_type="test",
+            actor_id="repairer",
+            event_type="chain.continue",
+            payload={"value": "new-business-event"},
+        )
+        db.commit()
+        assert merged.hash_version == 2
+        assert merged.parent_event_hashes_json == sorted(branch_hashes)
+        assert merged.payload_json["_audit_chain_merge"] == {"merged_head_count": 2}
+        verified = verify_audit_chain(db)
+        assert verified["valid"] is True
+        assert verified["head"] == merged.event_hash
+        assert verified["merge_events"] >= 1

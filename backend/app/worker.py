@@ -7,6 +7,8 @@ from langgraph.checkpoint.postgres import PostgresSaver
 
 from app.agent.graph import OpsAgentGraph
 from app.agent.service import claim_run, default_worker_id, process_claimed_run, recover_expired_runs
+from app.agent.status import expire_pending_approval_batches
+from app.context.jobs import claim_collector_run, process_collector_run, recover_expired_collector_runs
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.governance import AgentWorker
@@ -33,18 +35,32 @@ def main() -> None:
             saver.setup()
             agent = OpsAgentGraph(checkpointer=saver)
             last_recovery = 0.0
+            prefer_collector = False
             while not stopping:
                 with SessionLocal() as db:
                     _worker_heartbeat(db, worker_id)
                     if time.monotonic() - last_recovery > 30:
                         recovered = recover_expired_runs(db)
+                        expired_approvals = expire_pending_approval_batches(db)
+                        expired_collectors = recover_expired_collector_runs(db)
                         if recovered:
                             logger.warning("Marked %s expired runs as failed", recovered)
+                        if expired_approvals:
+                            logger.info("Expired %s pending approvals", expired_approvals)
+                        if expired_collectors:
+                            logger.warning("Marked %s expired collector runs as failed", expired_collectors)
                         last_recovery = time.monotonic()
-                    run = claim_run(db, worker_id)
+                    collector_run = claim_collector_run(db, worker_id) if prefer_collector else None
+                    run = claim_run(db, worker_id) if collector_run is None else None
                     if run:
                         process_claimed_run(db, agent, run, worker_id)
-                if not run:
+                    if not run and collector_run is None:
+                        collector_run = claim_collector_run(db, worker_id)
+                    if collector_run:
+                        process_collector_run(db, collector_run, worker_id)
+                    if run or collector_run:
+                        prefer_collector = not prefer_collector
+                if not run and not collector_run:
                     time.sleep(0.5)
     finally:
         with SessionLocal() as db:

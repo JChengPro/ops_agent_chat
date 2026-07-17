@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 import base64
 import hashlib
+import os
 from pathlib import PurePosixPath
 import shlex
 import posixpath
+import socket
 import stat
 import time
 from typing import Callable
@@ -24,17 +26,21 @@ class TransportResult:
     stderr: str
     duration_ms: int
     truncated: bool = False
+    error_code: str | None = None
 
 
 class SSHTransport:
     def test_connection(self, connection: Connection) -> tuple[bool, str]:
+        credential_error = self._credential_error(connection)
+        if credential_error:
+            return False, credential_error[1]
         client = self._client(connection)
         try:
             client.connect(**self._connect_kwargs(connection))
             self._verify_fingerprint(client, connection)
             return True, "SSH connection succeeded"
         except Exception as exc:  # noqa: BLE001
-            return False, f"SSH connection failed: {exc}"
+            return False, self._connection_error(exc)[1]
         finally:
             client.close()
 
@@ -49,8 +55,12 @@ class SSHTransport:
     ) -> TransportResult:
         if not argv or any("\x00" in item or "\n" in item for item in argv):
             return TransportResult("failed", None, "", "Invalid command arguments", 0)
-        client = self._client(connection)
         start = time.monotonic()
+        credential_error = self._credential_error(connection)
+        if credential_error:
+            error_code, message = credential_error
+            return TransportResult("failed", None, "", message, 0, error_code=error_code)
+        client = self._client(connection)
         try:
             client.connect(**self._connect_kwargs(connection))
             self._verify_fingerprint(client, connection)
@@ -86,7 +96,15 @@ class SSHTransport:
                     channel.close()
                     out, _ = truncate_text(out_buffer.decode("utf-8", errors="replace"), 65536)
                     err, _ = truncate_text(err_buffer.decode("utf-8", errors="replace"), 16384)
-                    return TransportResult("failed", None, out, (err + "\nCommand timed out").strip(), int((time.monotonic() - start) * 1000), True)
+                    return TransportResult(
+                        "failed",
+                        None,
+                        out,
+                        (err + "\nCommand timed out").strip(),
+                        int((time.monotonic() - start) * 1000),
+                        True,
+                        "ssh_command_timeout",
+                    )
                 time.sleep(0.01)
             exit_code = channel.recv_exit_status()
             out_raw = out_buffer.decode("utf-8", errors="replace")
@@ -102,11 +120,27 @@ class SSHTransport:
                 out_stream_truncated or err_stream_truncated or out_text_truncated or err_text_truncated,
             )
         except Exception as exc:  # noqa: BLE001
-            return TransportResult("failed", None, "", f"SSH execution failed: {exc}", int((time.monotonic() - start) * 1000))
+            error_code, message = self._connection_error(exc)
+            return TransportResult(
+                "failed",
+                None,
+                "",
+                message,
+                int((time.monotonic() - start) * 1000),
+                error_code=error_code,
+            )
         finally:
             client.close()
 
-    def read_file(self, connection: Connection, environment: Environment, relative_path: str) -> str:
+    def read_file(
+        self,
+        connection: Connection,
+        environment: Environment,
+        relative_path: str,
+        *,
+        timeout_seconds: int = 20,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> str:
         if not environment.workdir:
             raise ValueError("Environment workdir is not configured")
         relative = PurePosixPath(relative_path)
@@ -118,12 +152,20 @@ class SSHTransport:
             client.connect(**self._connect_kwargs(connection))
             self._verify_fingerprint(client, connection)
             with client.open_sftp() as sftp:
+                sftp.get_channel().settimeout(timeout_seconds)
                 target = self._safe_remote_target(sftp, environment.workdir, relative_path, allow_missing_leaf=False)
                 with sftp.open(target, "r") as handle:
-                    raw = handle.read(2_000_001)
-            if len(raw) > 2_000_000:
+                    content = bytearray()
+                    while len(content) <= 2_000_000:
+                        if cancel_check and cancel_check():
+                            raise RuntimeError("Collector cancelled")
+                        chunk = handle.read(min(65_536, 2_000_001 - len(content)))
+                        if not chunk:
+                            break
+                        content.extend(chunk.encode("utf-8") if isinstance(chunk, str) else chunk)
+            if len(content) > 2_000_000:
                 raise ValueError("Context source file exceeds 2 MB")
-            return raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            return bytes(content).decode("utf-8")
         finally:
             client.close()
 
@@ -246,6 +288,34 @@ class SSHTransport:
         if connection.credential_ref:
             kwargs["key_filename"] = connection.credential_ref
         return kwargs
+
+    @staticmethod
+    def _credential_error(connection: Connection) -> tuple[str, str] | None:
+        credential_ref = str(connection.credential_ref or "").strip()
+        if not credential_ref:
+            return "ssh_credential_not_configured", "项目尚未配置 SSH 私钥，无法连接目标服务器。"
+        if not os.path.isfile(credential_ref):
+            return (
+                "ssh_credential_missing",
+                "运行容器中没有找到 SSH 私钥。请重新创建 Backend 和 Worker 容器以恢复密钥挂载。",
+            )
+        if not os.access(credential_ref, os.R_OK):
+            return "ssh_credential_unreadable", "运行容器无法读取 SSH 私钥，请检查密钥文件权限。"
+        return None
+
+    @staticmethod
+    def _connection_error(exc: Exception) -> tuple[str, str]:
+        detail = str(exc)
+        lowered = detail.lower()
+        if isinstance(exc, paramiko.AuthenticationException):
+            return "ssh_authentication_failed", "SSH 身份验证失败，请检查用户名、私钥和 authorized_keys 配置。"
+        if isinstance(exc, paramiko.BadHostKeyException) or "fingerprint" in lowered or "host key" in lowered:
+            return "ssh_host_key_mismatch", "SSH host fingerprint 校验失败，请确认目标服务器身份和已登记指纹。"
+        if isinstance(exc, (socket.timeout, TimeoutError)):
+            return "ssh_connection_timeout", "连接目标服务器超时，请检查 SSH 地址、端口和网络连通性。"
+        if isinstance(exc, (paramiko.ssh_exception.NoValidConnectionsError, ConnectionError, OSError)):
+            return "ssh_connection_failed", "无法连接目标服务器，请检查 SSH 地址、端口和服务状态。"
+        return "ssh_execution_failed", f"SSH 执行失败：{detail}"
 
     def _verify_fingerprint(self, client: paramiko.SSHClient, connection: Connection) -> None:
         expected = (connection.host_fingerprint or "").strip()

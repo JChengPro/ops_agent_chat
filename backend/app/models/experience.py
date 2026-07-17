@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -9,6 +9,9 @@ from app.core.database import Base
 
 class ExperienceItem(Base):
     __tablename__ = "experience_items"
+    __table_args__ = (
+        CheckConstraint("trust_status IN ('draft','verified','rejected','archived')", name="ck_experience_trust_status"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)

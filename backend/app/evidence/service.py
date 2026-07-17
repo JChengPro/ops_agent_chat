@@ -11,7 +11,10 @@ from app.utils.redaction import redact_secrets
 
 def record_result(db: Session, action: Action, executor_type: str, result: AdapterResult) -> RuntimeEvidence:
     now = datetime.now(timezone.utc)
-    redacted_data = _redact_value(result.data)
+    result_data = dict(result.data)
+    if result.error_code:
+        result_data["error_code"] = result.error_code
+    redacted_data = _redact_value(result_data)
     redacted_raw = redact_secrets(result.raw_output)
     redacted_error = redact_secrets(result.error)
     is_sensitive = redacted_data != result.data or redacted_raw != result.raw_output or redacted_error != result.error
@@ -50,7 +53,6 @@ def record_result(db: Session, action: Action, executor_type: str, result: Adapt
         is_truncated=result.truncated,
     )
     db.add(evidence)
-    action.status = "succeeded" if result.status == "success" else "failed"
     db.flush()
     return evidence
 

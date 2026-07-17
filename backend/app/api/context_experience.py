@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_project, require_project_permission
@@ -11,6 +12,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.experience.service import index_experience, search_experience
 from app.models.context import ProjectEntity, ProjectRelationship
+from app.models.evidence import EvidenceClaimLink
 from app.models.experience import ExperienceChunk, ExperienceItem
 from app.models.user import User
 
@@ -23,7 +25,7 @@ class ExperiencePayload(BaseModel):
     item_type: str = "project_note"
     tags: list[str] = Field(default_factory=list, max_length=30)
     applicable_entities: list[str] = Field(default_factory=list, max_length=50)
-    trust_status: str = "draft"
+    trust_status: Literal["draft", "verified", "rejected", "archived"] = "draft"
 
 
 class ExperiencePatch(BaseModel):
@@ -31,7 +33,7 @@ class ExperiencePatch(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=500000)
     tags: list[str] | None = None
     applicable_entities: list[str] | None = None
-    trust_status: str | None = None
+    trust_status: Literal["draft", "verified", "rejected", "archived"] | None = None
 
 
 class SearchPayload(BaseModel):
@@ -78,7 +80,11 @@ def patch_experience(item_id: int, payload: ExperiencePatch, db: Session = Depen
     row = db.get(ExperienceItem, item_id)
     if not row: raise HTTPException(404, "Experience item not found")
     require_project_permission(db, user, row.project_id, "project.manage")
-    for key, value in payload.model_dump(exclude_unset=True).items(): setattr(row, key, value)
+    changed_content = bool(payload.model_fields_set & {"title", "content", "tags", "applicable_entities"})
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, key, value)
+    if changed_content:
+        row.trust_status = "draft"
     if row.trust_status == "verified": row.verified_by = user.id; row.verified_at = datetime.now(timezone.utc)
     else: row.verified_by = None; row.verified_at = None
     db.flush(); index_experience(db, row); db.commit(); db.refresh(row); return experience_out(row)
@@ -88,7 +94,14 @@ def patch_experience(item_id: int, payload: ExperiencePatch, db: Session = Depen
 def delete_experience(item_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     row = db.get(ExperienceItem, item_id)
     if not row: raise HTTPException(404, "Experience item not found")
-    require_project_permission(db, user, row.project_id, "project.manage"); db.delete(row); db.commit(); return {"deleted": True, "id": item_id}
+    require_project_permission(db, user, row.project_id, "project.manage")
+    row.trust_status = "archived"
+    row.verified_by = None
+    row.verified_at = None
+    db.execute(delete(ExperienceChunk).where(ExperienceChunk.experience_item_id == row.id))
+    db.commit()
+    linked = bool(db.scalar(select(EvidenceClaimLink.id).where(EvidenceClaimLink.experience_item_id == row.id).limit(1)))
+    return {"deleted": True, "archived": True, "referenced_by_claims": linked, "id": item_id}
 
 
 @router.post("/projects/{project_id}/experience/search")

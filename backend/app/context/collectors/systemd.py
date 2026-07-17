@@ -3,6 +3,8 @@ import hashlib
 
 from sqlalchemy import select
 
+from app.context.collectors.base import begin_collector_run
+from app.context.cancellation import collector_cancelled
 from app.context.service import upsert_entity
 from app.models.context import CollectorRun, ContextSource
 from app.runtime.transports.ssh import SSHTransport
@@ -14,10 +16,10 @@ class SystemdCollector:
 
     def __init__(self, transport=None): self.transport = transport or SSHTransport()
 
-    def collect(self, db, environment, connection):
-        run = CollectorRun(project_id=environment.project_id, environment_id=environment.id, collector_name=self.name, status="running"); db.add(run); db.flush()
+    def collect(self, db, environment, connection, run=None):
+        run = begin_collector_run(db, environment, self.name, run)
         try:
-            result = self.transport.execute(connection, environment, ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend", "--plain"])
+            result = self.transport.execute(connection, environment, ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend", "--plain"], cancel_check=lambda: collector_cancelled(run.id))
             if result.status != "success": raise RuntimeError(result.stderr or "systemd collection failed")
             now = datetime.now(timezone.utc); ref = "systemd:services"
             source = db.scalar(select(ContextSource).where(ContextSource.project_id == environment.project_id, ContextSource.environment_id == environment.id, ContextSource.source_type == "systemd", ContextSource.source_ref == ref))
@@ -28,7 +30,6 @@ class SystemdCollector:
                 fields = line.split(None, 4)
                 if len(fields) < 4 or not fields[0].endswith(".service"): continue
                 upsert_entity(db, project_id=environment.project_id, environment_id=environment.id, source_id=source.id, entity_type="runtime_unit", canonical_name=fields[0], properties={"load": fields[1], "active": fields[2], "sub": fields[3], "description": fields[4] if len(fields) > 4 else ""}); count += 1
-            run.status = "success"; run.summary_json = {"entities": count}
-        except Exception as exc: run.status = "failed"; run.error_message = str(exc)[:2000]
-        run.finished_at = datetime.now(timezone.utc); db.flush(); return run
-
+            run.summary_json = {"entities": count}; run.error_message = None
+        except Exception as exc: run.error_message = str(exc)[:2000]
+        db.flush(); return run

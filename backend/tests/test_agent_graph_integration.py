@@ -1,11 +1,14 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from langgraph.checkpoint.postgres import PostgresSaver
-from sqlalchemy import select
+import pytest
+from sqlalchemy import select, update
 
 from app.agent.graph import OpsAgentGraph
 from app.agent.service import _persist_claims, claim_run, create_run, process_claimed_run
 from app.api.approvals import ApprovalDecision, decide as decide_approval
+from app.capabilities.registry import registry
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.llm.gateway import LLMGateway
@@ -20,7 +23,7 @@ from app.models.user import User
 from app.services.seed_service import seed_initial_data
 from app.evidence.service import record_result
 from app.runtime.adapters.base import AdapterResult
-from app.models.evidence import EvidenceClaim, EvidenceClaimLink
+from app.models.evidence import EvidenceClaim, EvidenceClaimLink, RuntimeEvidence
 
 
 def req(goal="answer", scope="general", effect="none", time="timeless"):
@@ -33,6 +36,7 @@ class FakeExecutor:
 
     def execute(self, db, action, capability):
         self.calls += 1
+        assert action.execution_token, "Every remotely executed Action must carry an execution token"
         data = {"stdout": '{"State":"running"}\n'} if capability.name == "service.status" else {"state": "running"}
         evidence = record_result(db, action, "fake", AdapterResult("success", f"Observed {capability.name}", data))
         db.flush()
@@ -115,6 +119,250 @@ def test_direct_answer_and_read_investigation_and_approval_resume():
             assert executor.calls == calls_before_retry
 
 
+def test_non_retryable_runtime_configuration_error_stops_after_one_tool_call():
+    user_id, session_id = setup_subject()
+    decisions = [
+        {
+            "decision": "invoke_tools",
+            "request": req("investigate", "runtime", "read", "current"),
+            "tool_calls": [
+                {"capability": "service.list", "arguments": {}, "purpose": "list services"},
+            ],
+            "answer": None,
+            "clarification_question": None,
+        },
+    ]
+
+    class MissingCredentialExecutor(FakeExecutor):
+        def execute(self, db, action, capability):
+            self.calls += 1
+            result = AdapterResult(
+                "failed",
+                "运行容器中缺少 SSH 私钥",
+                {"stderr": "运行容器中没有找到 SSH 私钥。"},
+                error="运行容器中没有找到 SSH 私钥。",
+                error_code="ssh_credential_missing",
+            )
+            evidence = record_result(db, action, "fake", result)
+            db.flush()
+            return {
+                "evidence_id": evidence.id,
+                "capability": capability.name,
+                "status": evidence.status,
+                "summary": evidence.summary,
+                "data": evidence.data_json,
+                "error_code": result.error_code,
+                "observed_at": evidence.observed_at.isoformat(),
+                "fresh_until": None,
+            }
+
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        executor = MissingCredentialExecutor()
+        graph = OpsAgentGraph(
+            checkpointer=saver,
+            gateway=LLMGateway(FakeDecisionProvider(decisions)),
+            executor=executor,
+        )
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "项目有几个容器正常？")
+            result = process_claimed_run(
+                db,
+                graph,
+                claim_run(db, "test-worker", queued["run_summary"]["id"]),
+                "test-worker",
+            )
+
+            assert result["run_summary"]["status"] == "failed"
+            assert executor.calls == 1
+            assert "force-recreate backend worker" in result["assistant_message"]["content"]
+            actions = list(db.scalars(select(Action).where(Action.run_id == result["run_summary"]["id"])))
+            assert len(actions) == 1
+            assert actions[0].status == "failed"
+
+
+def test_late_action_result_cannot_overwrite_lease_recovery():
+    user_id, session_id = setup_subject()
+    decisions = [
+        {
+            "decision": "propose_change",
+            "request": req("change", "runtime", "change", "current"),
+            "tool_calls": [{"capability": "service.restart", "arguments": {"service": "redis"}, "purpose": "restart"}],
+            "answer": None,
+            "clarification_question": None,
+        },
+    ]
+
+    class LeaseLossExecutor(FakeExecutor):
+        def execute(self, db, action, capability):
+            if capability.name == "service.restart":
+                with SessionLocal() as recovery_db:
+                    recovery_db.execute(
+                        update(Action)
+                        .where(Action.id == action.id, Action.status == "executing")
+                        .values(status="execution_unknown", execution_finished_at=datetime.now(timezone.utc))
+                    )
+                    recovery_db.execute(
+                        update(AgentRun)
+                        .where(AgentRun.id == action.run_id, AgentRun.status == "running")
+                        .values(
+                            status="failed",
+                            error_code="WORKER_LEASE_EXPIRED",
+                            completed_at=datetime.now(timezone.utc),
+                            lease_owner=None,
+                            lease_expires_at=None,
+                        )
+                    )
+                    recovery_db.commit()
+            return super().execute(db, action, capability)
+
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        executor = LeaseLossExecutor()
+        graph = OpsAgentGraph(
+            checkpointer=saver,
+            gateway=LLMGateway(FakeDecisionProvider(decisions)),
+            executor=executor,
+        )
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "重启 Redis")
+            waiting = process_claimed_run(
+                db,
+                graph,
+                claim_run(db, "late-result-worker", queued["run_summary"]["id"]),
+                "late-result-worker",
+            )
+            approval = db.scalar(select(Approval).join(Action).where(Action.run_id == waiting["run_summary"]["id"]))
+            decide_approval(
+                approval.id,
+                ApprovalDecision(action_hash=approval.action_hash),
+                "approved",
+                db,
+                db.get(User, user_id),
+            )
+            finished = process_claimed_run(
+                db,
+                graph,
+                claim_run(db, "late-result-worker", waiting["run_summary"]["id"]),
+                "late-result-worker",
+            )
+            db.expire_all()
+            action = db.scalar(
+                select(Action).where(
+                    Action.run_id == waiting["run_summary"]["id"],
+                    Action.capability_name == "service.restart",
+                )
+            )
+            run = db.get(AgentRun, waiting["run_summary"]["id"])
+            late_evidence = list(db.scalars(select(RuntimeEvidence.id).where(RuntimeEvidence.action_id == action.id)))
+
+            assert finished["run_summary"]["status"] == "failed"
+            assert run.status == "failed" and run.error_code == "WORKER_LEASE_EXPIRED"
+            assert action.status == "execution_unknown"
+            assert late_evidence == []
+            assert executor.calls == 3  # Initial precheck, approval recheck, late restart result.
+
+
+def test_late_precheck_result_cannot_survive_terminal_run_recovery():
+    user_id, session_id = setup_subject()
+    decisions = [
+        {
+            "decision": "propose_change",
+            "request": req("change", "runtime", "change", "current"),
+            "tool_calls": [{"capability": "service.restart", "arguments": {"service": "redis"}, "purpose": "restart"}],
+            "answer": None,
+            "clarification_question": None,
+        },
+    ]
+
+    class PrecheckLeaseLossExecutor(FakeExecutor):
+        def __init__(self):
+            super().__init__()
+            self.status_calls = 0
+
+        def execute(self, db, action, capability):
+            if capability.name == "service.status":
+                self.status_calls += 1
+                if self.status_calls == 2:
+                    with SessionLocal() as recovery_db:
+                        recovery_db.execute(
+                            update(Action)
+                            .where(Action.id == action.id, Action.status == "executing")
+                            .values(status="execution_unknown", execution_finished_at=datetime.now(timezone.utc))
+                        )
+                        recovery_db.execute(
+                            update(Action)
+                            .where(
+                                Action.run_id == action.run_id,
+                                Action.status.in_(["proposed", "ready", "waiting_for_approval", "approved"]),
+                            )
+                            .values(status="cancelled", execution_finished_at=datetime.now(timezone.utc))
+                        )
+                        recovery_db.execute(
+                            update(AgentRun)
+                            .where(AgentRun.id == action.run_id, AgentRun.status == "running")
+                            .values(
+                                status="failed",
+                                error_code="WORKER_LEASE_EXPIRED",
+                                completed_at=datetime.now(timezone.utc),
+                                lease_owner=None,
+                                lease_expires_at=None,
+                            )
+                        )
+                        recovery_db.commit()
+            return super().execute(db, action, capability)
+
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        executor = PrecheckLeaseLossExecutor()
+        graph = OpsAgentGraph(
+            checkpointer=saver,
+            gateway=LLMGateway(FakeDecisionProvider(decisions)),
+            executor=executor,
+        )
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "重启 Redis")
+            waiting = process_claimed_run(
+                db,
+                graph,
+                claim_run(db, "late-precheck-worker", queued["run_summary"]["id"]),
+                "late-precheck-worker",
+            )
+            approval = db.scalar(select(Approval).join(Action).where(Action.run_id == waiting["run_summary"]["id"]))
+            decide_approval(
+                approval.id,
+                ApprovalDecision(action_hash=approval.action_hash),
+                "approved",
+                db,
+                db.get(User, user_id),
+            )
+            finished = process_claimed_run(
+                db,
+                graph,
+                claim_run(db, "late-precheck-worker", waiting["run_summary"]["id"]),
+                "late-precheck-worker",
+            )
+            db.expire_all()
+            actions = list(db.scalars(select(Action).where(Action.run_id == waiting["run_summary"]["id"])))
+            primary = next(item for item in actions if item.capability_name == "service.restart")
+            prechecks = [item for item in actions if item.capability_name == "service.status"]
+            unknown_precheck = next(item for item in prechecks if item.status == "execution_unknown")
+            late_evidence = list(
+                db.scalars(
+                    select(RuntimeEvidence.id).where(RuntimeEvidence.action_id == unknown_precheck.id)
+                )
+            )
+
+            assert finished["run_summary"]["status"] == "failed"
+            assert primary.status == "cancelled"
+            assert {item.status for item in prechecks} == {"succeeded", "execution_unknown"}
+            assert late_evidence == []
+            assert executor.calls == 2
+
+
 def test_failed_post_change_verification_triggers_automatic_rollback():
     user_id, session_id = setup_subject()
     decisions = [
@@ -165,6 +413,96 @@ def test_failed_post_change_verification_triggers_automatic_rollback():
             assert executor.rollback_calls == 1
 
 
+def test_already_consumed_approval_cannot_execute_a_restored_approved_action():
+    user_id, session_id = setup_subject()
+    decisions = [
+        {"decision":"propose_change","request":req("change","runtime","change","current"),"tool_calls":[{"capability":"service.restart","arguments":{"service":"redis"},"purpose":"restart"}],"answer":None,"clarification_question":None},
+        {"decision":"respond","request":req("change","runtime","change","current"),"tool_calls":[],"answer":"该审批已被消费，本次没有重复执行。","clarification_question":None},
+    ]
+    executor = FakeExecutor()
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        graph = OpsAgentGraph(checkpointer=saver, gateway=LLMGateway(FakeDecisionProvider(decisions)), executor=executor)
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "重启 Redis")
+            waiting = process_claimed_run(db, graph, claim_run(db, "consumed-worker", queued["run_summary"]["id"]), "consumed-worker")
+            approval = db.scalar(select(Approval).join(Action).where(Action.run_id == waiting["run_summary"]["id"]))
+            decide_approval(approval.id, ApprovalDecision(action_hash=approval.action_hash), "approved", db, db.get(User, user_id))
+            approval.consumed_at = datetime.now(timezone.utc)
+            db.commit()
+
+            process_claimed_run(db, graph, claim_run(db, "consumed-worker", waiting["run_summary"]["id"]), "consumed-worker")
+            action = db.scalar(select(Action).where(Action.run_id == waiting["run_summary"]["id"], Action.capability_name == "service.restart"))
+            assert action.status == "approval_invalid"
+            assert executor.calls == 2  # Initial precheck and safe post-approval recheck only.
+
+
+@pytest.mark.parametrize("changed_capability", ["service.restart", "service.status", "service.start"])
+def test_approved_action_is_not_executed_after_registry_version_changes(monkeypatch, changed_capability):
+    user_id, session_id = setup_subject()
+    decisions = [
+        {"decision":"propose_change","request":req("change","runtime","change","current"),"tool_calls":[{"capability":"service.restart","arguments":{"service":"redis"},"purpose":"restart"}],"answer":None,"clarification_question":None},
+        {"decision":"respond","request":req("change","runtime","change","current"),"tool_calls":[],"answer":"能力定义已经更新，本次旧审批未执行。","clarification_question":None},
+    ]
+    executor = FakeExecutor()
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        graph = OpsAgentGraph(checkpointer=saver, gateway=LLMGateway(FakeDecisionProvider(decisions)), executor=executor)
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "重启 Redis")
+            waiting = process_claimed_run(db, graph, claim_run(db, "binding-worker", queued["run_summary"]["id"]), "binding-worker")
+            assert waiting["run_summary"]["status"] == "waiting_for_approval"
+            approval = db.scalar(select(Approval).join(Action).where(Action.run_id == waiting["run_summary"]["id"]))
+            decide_approval(approval.id, ApprovalDecision(action_hash=approval.action_hash), "approved", db, db.get(User, user_id))
+            action = db.scalar(select(Action).where(Action.run_id == waiting["run_summary"]["id"], Action.capability_name == "service.restart"))
+            approved_definition_hash = action.capability_definition_hash
+
+            current = registry.get(changed_capability)
+            monkeypatch.setitem(registry._definitions, current.name, replace(current, version="final-2"))
+            finished = process_claimed_run(db, graph, claim_run(db, "binding-worker", waiting["run_summary"]["id"]), "binding-worker")
+            db.refresh(action)
+
+            assert finished["run_summary"]["status"] == "completed"
+            assert action.status == "approval_invalid"
+            assert action.capability_definition_hash == approved_definition_hash
+            assert executor.calls == 1  # Only the pre-approval read-only precheck ran.
+
+
+@pytest.mark.parametrize("drift", ["configuration", "policy"])
+def test_approved_action_is_not_executed_after_governance_snapshot_drift(drift):
+    user_id, session_id = setup_subject()
+    decisions = [
+        {"decision":"propose_change","request":req("change","runtime","change","current"),"tool_calls":[{"capability":"service.restart","arguments":{"service":"redis"},"purpose":"restart"}],"answer":None,"clarification_question":None},
+        {"decision":"respond","request":req("change","runtime","change","current"),"tool_calls":[],"answer":"审批依据已经变化，本次变更未执行。","clarification_question":None},
+    ]
+    executor = FakeExecutor()
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        graph = OpsAgentGraph(checkpointer=saver, gateway=LLMGateway(FakeDecisionProvider(decisions)), executor=executor)
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "重启 Redis")
+            waiting = process_claimed_run(db, graph, claim_run(db, "governance-worker", queued["run_summary"]["id"]), "governance-worker")
+            approval = db.scalar(select(Approval).join(Action).where(Action.run_id == waiting["run_summary"]["id"]))
+            decide_approval(approval.id, ApprovalDecision(action_hash=approval.action_hash), "approved", db, db.get(User, user_id))
+            action = db.scalar(select(Action).where(Action.run_id == waiting["run_summary"]["id"], Action.capability_name == "service.restart"))
+            if drift == "configuration":
+                environment = db.get(Environment, action.environment_id)
+                environment.config_json = {**environment.config_json, "compose_file": "changed-compose.yml"}
+                db.commit()
+            else:
+                graph.policy.policy_version = "final-2"
+
+            finished = process_claimed_run(db, graph, claim_run(db, "governance-worker", waiting["run_summary"]["id"]), "governance-worker")
+            db.refresh(action)
+
+            assert finished["run_summary"]["status"] == "completed"
+            assert action.status == "approval_invalid"
+            assert executor.calls == 1  # Only the original pre-approval precheck ran.
+
+
 def test_project_relationship_recursive_query_and_source_conflict():
     user_id, session_id = setup_subject()
     del user_id
@@ -178,9 +516,13 @@ def test_project_relationship_recursive_query_and_source_conflict():
         database = upsert_entity(db, project_id=env.project_id, environment_id=env.id, source_id=source_a.id, entity_type="service", canonical_name="test-db", properties={"port": 5432})
         upsert_relationship(db, project_id=env.project_id, environment_id=env.id, source_id=source_a.id, from_entity_id=gateway.id, to_entity_id=api.id, relation_type="DEPENDS_ON")
         upsert_relationship(db, project_id=env.project_id, environment_id=env.id, source_id=source_a.id, from_entity_id=api.id, to_entity_id=database.id, relation_type="DEPENDS_ON")
+        unrelated = upsert_entity(db, project_id=env.project_id, environment_id=env.id, source_id=source_b.id, entity_type="service", canonical_name="test-unrelated", properties={})
+        other = upsert_entity(db, project_id=env.project_id, environment_id=env.id, source_id=source_b.id, entity_type="service", canonical_name="test-other", properties={})
+        upsert_relationship(db, project_id=env.project_id, environment_id=env.id, source_id=source_b.id, from_entity_id=unrelated.id, to_entity_id=other.id, relation_type="DEPENDS_ON")
         conflicted = upsert_entity(db, project_id=env.project_id, environment_id=env.id, source_id=source_b.id, entity_type="service", canonical_name="test-api", properties={"port": 9090})
         db.commit()
         assert conflicted.confidence < 1
         assert conflicted.properties_json["_has_source_conflict"] is True
         result = query_relationships(db, env.project_id, env.id, "test-gateway", 3, reverse=False)
         assert any(path["path"] == ["test-gateway", "test-api", "test-db"] for path in result["paths"])
+        assert result["source_ids"] == [source_a.id]

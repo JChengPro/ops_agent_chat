@@ -71,3 +71,29 @@ def test_empty_tool_decision_has_safe_clarification_fallback():
     decision = AgentDecision.model_validate(_normalize_decision_payload(payload))
     assert decision.decision == "clarify"
     assert "具体操作目标" in decision.clarification_question
+
+
+def test_tool_decision_supports_the_run_level_tool_budget():
+    tool_calls = [
+        {"capability": "service.status", "arguments": {"service": f"service-{index}"}, "purpose": "检查服务状态"}
+        for index in range(50)
+    ]
+    decision = AgentDecision.model_validate({
+        "decision": "invoke_tools",
+        "request": request(goal="investigate", scope="runtime", time_focus="current", requested_effect="read"),
+        "tool_calls": tool_calls,
+    })
+    assert len(decision.tool_calls) == 50
+
+
+def test_non_response_claims_are_removed_during_normalization():
+    payload = {
+        "decision": "propose_change",
+        "request": request(goal="change", scope="runtime", time_focus="current", requested_effect="none"),
+        "tool_calls": [{"capability": "service.start", "arguments": {"service": "backend"}}],
+        "claims": [{"text": "尚未执行", "claim_type": "gap", "confidence": 0.5}],
+    }
+    normalized = _normalize_decision_payload(payload)
+    decision = AgentDecision.model_validate(normalized)
+    assert decision.request.requested_effect == "change"
+    assert decision.claims == []

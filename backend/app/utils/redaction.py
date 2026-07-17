@@ -22,4 +22,7 @@ def truncate_text(text: str | None, limit: int) -> tuple[str, bool]:
     safe = redact_secrets(text or "")
     if len(safe) <= limit:
         return safe, False
-    return safe[:limit] + "\n...[truncated]", True
+    marker = "\n...[truncated]"
+    if limit <= len(marker):
+        return safe[:limit], True
+    return safe[: limit - len(marker)] + marker, True
