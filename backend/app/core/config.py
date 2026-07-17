@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_email: str = "admin@example.com"
     admin_password: str = "change-me-before-running"
+    registration_enabled: bool = Field(default=True, alias="REGISTRATION_ENABLED")
+    registration_invite_code: str = Field(default="", alias="REGISTRATION_INVITE_CODE")
 
     videohub_project_name: str = "VideoHub"
     videohub_deploy_type: str = "docker_compose"
@@ -52,6 +54,11 @@ class Settings(BaseSettings):
                 problems.append("APP_SECRET_KEY must be a non-default value of at least 32 characters")
             if self.admin_password == "change-me-before-running":
                 problems.append("ADMIN_PASSWORD must not use the development default")
+            if self.registration_enabled and (
+                len(self.registration_invite_code) < 16
+                or self.registration_invite_code in {"change-me", "replace-with-a-registration-code"}
+            ):
+                problems.append("REGISTRATION_INVITE_CODE must be a non-default value of at least 16 characters when registration is enabled")
             if "opsagent_password" in self.database_url:
                 problems.append("DATABASE_URL must not use the development password")
             if not self.ssh_strict_host_key_checking:

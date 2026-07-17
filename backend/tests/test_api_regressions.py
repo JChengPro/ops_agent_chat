@@ -11,11 +11,12 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import ProgrammingError
 
 from app.agent.service import _persist_result, claim_run, create_run, process_claimed_run, recover_expired_runs
+from app.api import auth as auth_api
 from app.audit.service import append_audit_event, verify_audit_chain
 from app.capabilities.registry import registry
 from app.core.config import Settings
 from app.core.database import SessionLocal
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token, hash_password, verify_password
 from app.llm.gateway import LLMGateway, ModelCallCancelled
 from app.llm.schemas import AgentDecision
 from app.main import app
@@ -61,6 +62,67 @@ def test_logout_revokes_existing_token(client: TestClient):
     assert client.get("/api/auth/me", headers=headers).status_code == 401
 
 
+def test_registration_creates_an_isolated_normal_user_and_returns_a_token(client: TestClient):
+    suffix = uuid4().hex[:10]
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "username": f"New.User-{suffix}",
+            "email": f"New.User-{suffix}@Example.Test",
+            "password": "secure-pass-123",
+            "password_confirmation": "secure-pass-123",
+        },
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["user"]["username"] == f"new.user-{suffix}"
+    assert payload["user"]["email"] == f"new.user-{suffix}@example.test"
+    assert payload["user"]["role"] == "user"
+    headers = {"Authorization": f"Bearer {payload['access_token']}"}
+    assert client.get("/api/auth/me", headers=headers).json()["id"] == payload["user"]["id"]
+    assert client.get("/api/projects", headers=headers).json() == []
+    assert client.get("/api/chat-sessions", headers=headers).json() == []
+    with SessionLocal() as db:
+        user = db.get(User, payload["user"]["id"])
+        assert user.password_hash != "secure-pass-123"
+        assert verify_password("secure-pass-123", user.password_hash)
+
+
+def test_registration_rejects_case_insensitive_duplicates_and_invalid_passwords(client: TestClient):
+    suffix = uuid4().hex[:10]
+    username = f"duplicate-{suffix}"
+    email = f"duplicate-{suffix}@example.test"
+    valid = {
+        "username": username,
+        "email": email,
+        "password": "secure-pass-123",
+        "password_confirmation": "secure-pass-123",
+    }
+    assert client.post("/api/auth/register", json=valid).status_code == 201
+    assert client.post("/api/auth/register", json={**valid, "username": username.upper(), "email": f"other-{suffix}@example.test"}).status_code == 409
+    assert client.post("/api/auth/register", json={**valid, "username": f"other-{suffix}", "email": email.upper()}).status_code == 409
+    mismatch = client.post("/api/auth/register", json={**valid, "username": f"mismatch-{suffix}", "email": f"mismatch-{suffix}@example.test", "password_confirmation": "different-pass-456"})
+    assert mismatch.status_code == 422
+    assert "secure-pass-123" not in mismatch.text
+
+
+def test_registration_honors_invite_code_and_disable_switch(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    suffix = uuid4().hex[:10]
+    payload = {
+        "username": f"invite-{suffix}",
+        "email": f"invite-{suffix}@example.test",
+        "password": "secure-pass-123",
+        "password_confirmation": "secure-pass-123",
+    }
+    monkeypatch.setattr(auth_api, "get_settings", lambda: SimpleNamespace(registration_enabled=True, registration_invite_code="private-registration-code"))
+    assert client.get("/api/auth/registration").json() == {"enabled": True, "invite_code_required": True}
+    assert client.post("/api/auth/register", json=payload).status_code == 403
+    assert client.post("/api/auth/register", json={**payload, "invite_code": "private-registration-code"}).status_code == 201
+    monkeypatch.setattr(auth_api, "get_settings", lambda: SimpleNamespace(registration_enabled=False, registration_invite_code=""))
+    assert client.get("/api/auth/registration").json()["enabled"] is False
+    assert client.post("/api/auth/register", json={**payload, "username": f"disabled-{suffix}", "email": f"disabled-{suffix}@example.test"}).status_code == 403
+
+
 def test_login_lockout_and_inactive_user_rejection(client: TestClient):
     user = create_user()
     for _ in range(5):
@@ -102,6 +164,21 @@ def test_production_settings_reject_unsafe_defaults():
             database_url="postgresql+psycopg://opsagent:opsagent_password@db/ops",
             DEEPSEEK_API_KEY="",
             SSH_STRICT_HOST_KEY_CHECKING=False,
+        )
+
+
+def test_production_registration_requires_a_strong_invite_code():
+    with pytest.raises(ValueError, match="REGISTRATION_INVITE_CODE"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            APP_SECRET_KEY="a-secure-application-secret-with-32-characters",
+            admin_password="non-default-admin-password",
+            database_url="postgresql+psycopg://opsagent:secure@db/ops",
+            DEEPSEEK_API_KEY="configured-api-key",
+            SSH_STRICT_HOST_KEY_CHECKING=True,
+            REGISTRATION_ENABLED=True,
+            REGISTRATION_INVITE_CODE="",
         )
 
 

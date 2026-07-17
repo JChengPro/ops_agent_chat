@@ -2,6 +2,8 @@ import { apiFetch, setToken } from "./client";
 import type { Action, AgentRun, AgentStep, Approval, ApprovalBatchDecisionResponse, ApprovalDecisionResponse, ChatMessage, ChatSession, CollectorRun, Connection, ConnectionPayload, Entity, Environment, EnvironmentPayload, Evidence, ExperienceItem, MonitorEvent, Project, User } from "./types";
 
 export async function login(username: string, password: string): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/login", {method:"POST",body:JSON.stringify({username,password})}); setToken(data.access_token); return data.user; }
+export const registrationConfig = () => apiFetch<{enabled:boolean;invite_code_required:boolean}>("/api/auth/registration");
+export async function registerAccount(payload:{username:string;email:string;password:string;password_confirmation:string;invite_code?:string}): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/register",{method:"POST",body:JSON.stringify(payload)}); setToken(data.access_token); return data.user; }
 export const logout = () => apiFetch<void>("/api/auth/logout",{method:"POST"});
 export const me = () => apiFetch<User>("/api/auth/me");
 export const listProjects = () => apiFetch<Project[]>("/api/projects");

@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { validateRegistration } from "../src/authState.ts";
 import { applyApprovalBatchResult, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../src/uiState.ts";
+
+test("registration form validates identity, password and optional invite code", () => {
+  const valid = {username: "new-user", email: "new@example.test", password: "secure-pass-123", passwordConfirmation: "secure-pass-123", inviteCode: "invite"};
+  assert.equal(validateRegistration(valid, false), null);
+  assert.match(validateRegistration({...valid, username: "x"}, false), /用户名/);
+  assert.match(validateRegistration({...valid, email: "invalid"}, false), /邮箱/);
+  assert.match(validateRegistration({...valid, password: "password", passwordConfirmation: "password"}, false), /10/);
+  assert.match(validateRegistration({...valid, passwordConfirmation: "secure-pass-456"}, false), /不一致/);
+  assert.match(validateRegistration({...valid, inviteCode: ""}, true), /注册码/);
+});
 
 test("run polling stops for approval and terminal states", () => {
   assert.equal(isRunPollingTerminal("queued"), false);
