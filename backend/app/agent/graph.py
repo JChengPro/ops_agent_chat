@@ -488,12 +488,27 @@ class OpsAgentGraph:
             ]
         interrupt({"type": "approval_required", "approvals": payload})
         with SessionLocal() as db:
-            decided = list(db.scalars(select(Approval).join(Action).where(Action.id.in_(state.get("action_ids", [])))))
-            if any(item.decision == "rejected" for item in decided):
-                return {"status": "completed", "answer": "该变更请求已被拒绝，没有执行任何状态变更。"}
-            if any(item.decision != "approved" for item in decided):
+            decided = db.execute(
+                select(Approval, Action)
+                .join(Action)
+                .where(Action.id.in_(state.get("action_ids", [])))
+            ).all()
+            approved = [(approval, action) for approval, action in decided if approval.decision == "approved" and action.status == "approved"]
+            if approved:
+                skipped = [
+                    {
+                        "action_id": action.id,
+                        "capability": action.capability_name,
+                        "status": "rejected",
+                        "summary": "用户未勾选该变更，本次未执行。",
+                    }
+                    for approval, action in decided
+                    if approval.decision == "rejected" and approval.reason_code == "USER_BATCH_NOT_SELECTED"
+                ]
+                return {"status": "running", "evidence": state.get("evidence", []) + skipped}
+            if any(approval.decision not in {"approved", "rejected"} for approval, _ in decided):
                 return {"status": "completed", "answer": "审批未通过或已经失效，没有执行任何状态变更。"}
-        return {"status": "running"}
+        return {"status": "completed", "answer": "你没有批准任何变更，本次没有执行状态修改。"}
 
     def execute(self, state: AgentState) -> dict:
         observations = list(state.get("evidence", []))
@@ -785,8 +800,16 @@ class OpsAgentGraph:
     @staticmethod
     def route_approval(state: AgentState) -> str:
         with SessionLocal() as db:
-            approvals = list(db.scalars(select(Approval).join(Action).where(Action.id.in_(state.get("action_ids", [])))))
-            approved = approvals and all(item.decision == "approved" for item in approvals)
+            approved = db.scalar(
+                select(Action.id)
+                .join(Approval)
+                .where(
+                    Action.id.in_(state.get("action_ids", [])),
+                    Action.status == "approved",
+                    Approval.decision == "approved",
+                )
+                .limit(1)
+            )
         return "execute" if approved else "finish"
 
     @staticmethod

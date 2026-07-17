@@ -29,9 +29,10 @@ test("batch approval acknowledgement updates every returned approval and the run
     id: 2, session_id: 1, project_id: 1, role: "assistant", content: "older", message_type: "text",
     metadata_json: {approvals: [{id: "other", decision: "pending"}]},
   }];
-  const updated = applyApprovalBatchResult(rows, [{id: "a", decision: "approved"}, {id: "b", decision: "approved"}], "queued");
+  const updated = applyApprovalBatchResult(rows, [{id: "a", decision: "approved"}, {id: "b", decision: "rejected", reason_code: "USER_BATCH_NOT_SELECTED"}], "queued");
   assert.equal(updated[0].metadata_json.run_status, "queued");
-  assert.deepEqual(updated[0].metadata_json.approvals.map(item => item.decision), ["approved", "approved"]);
+  assert.deepEqual(updated[0].metadata_json.approvals.map(item => item.decision), ["approved", "rejected"]);
+  assert.equal(updated[0].metadata_json.approvals[1].reason_code, "USER_BATCH_NOT_SELECTED");
   assert.equal(updated[1], rows[1]);
 });
 

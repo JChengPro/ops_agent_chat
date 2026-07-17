@@ -34,6 +34,7 @@ class ApprovalBatchItem(BaseModel):
 
 class ApprovalBatchDecision(BaseModel):
     approvals: list[ApprovalBatchItem] = Field(min_length=1, max_length=50)
+    selected_approval_ids: list[str] | None = Field(default=None, max_length=50)
     comment: str | None = None
 
     @model_validator(mode="after")
@@ -41,6 +42,9 @@ class ApprovalBatchDecision(BaseModel):
         ids = [item.approval_id for item in self.approvals]
         if len(ids) != len(set(ids)):
             raise ValueError("Approval IDs must be unique")
+        selected = self.selected_approval_ids or []
+        if len(selected) != len(set(selected)):
+            raise ValueError("Selected approval IDs must be unique")
         return self
 
 
@@ -184,6 +188,12 @@ def decide_batch(run_id: str, payload: ApprovalBatchDecision, decision: str, db:
     pending_ids = {approval.id for approval, _ in rows}
     if not rows or set(submitted) != pending_ids:
         raise HTTPException(409, "Approval batch has changed; refresh and review it again")
+    if decision == "approved":
+        selected_ids = pending_ids if payload.selected_approval_ids is None else set(payload.selected_approval_ids)
+        if not selected_ids.issubset(pending_ids):
+            raise HTTPException(409, "Selected approvals are not part of the current batch")
+    else:
+        selected_ids = set()
 
     now = datetime.now(timezone.utc)
     if any(approval.expires_at <= now for approval, _ in rows):
@@ -218,11 +228,16 @@ def decide_batch(run_id: str, payload: ApprovalBatchDecision, decision: str, db:
         db.commit()
         raise HTTPException(409, "An Action changed; the approval batch is invalid")
 
-    approval_decision = "approved" if decision == "approved" else "rejected"
-    action_status = "approved" if decision == "approved" else "rejected"
     for approval, action in rows:
+        selected = approval.id in selected_ids
+        approval_decision = "approved" if selected else "rejected"
+        action_status = "approved" if selected else "rejected"
         approval.decision = approval_decision
-        approval.reason_code = f"USER_BATCH_{approval_decision.upper()}"
+        approval.reason_code = (
+            "USER_BATCH_APPROVED"
+            if selected
+            else "USER_BATCH_NOT_SELECTED" if decision == "approved" else "USER_BATCH_REJECTED"
+        )
         approval.comment = payload.comment
         approval.decided_by = user.id
         approval.decided_at = now
@@ -232,7 +247,12 @@ def decide_batch(run_id: str, payload: ApprovalBatchDecision, decision: str, db:
             actor_type="user",
             actor_id=user.id,
             event_type=f"approval.{approval_decision}",
-            payload={"approval_id": approval.id, "action_hash": approval.action_hash, "batch": True},
+            payload={
+                "approval_id": approval.id,
+                "action_hash": approval.action_hash,
+                "batch": True,
+                "selected": selected,
+            },
             project_id=action.project_id,
             environment_id=action.environment_id,
             run_id=run.id,

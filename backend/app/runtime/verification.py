@@ -189,6 +189,8 @@ def _exit_code(item: dict[str, Any]) -> int:
 
 
 def _int(value: object, default: int) -> int:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return default
     try:
         return int(value)
     except (TypeError, ValueError):

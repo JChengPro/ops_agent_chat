@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.agent.service import _available_source_ids, create_run
+from app.agent.graph import OpsAgentGraph
 from app.api.approvals import ApprovalDecision, decide as decide_approval
 from app.context.jobs import claim_collector_run, process_collector_run
 from app.core.database import SessionLocal
@@ -437,6 +438,7 @@ def test_batch_approval_is_atomic_and_resumes_run_once(client: TestClient):
         db.add(run)
         db.flush()
         approvals = []
+        action_ids = []
         for index in range(2):
             action = Action(
                 id=str(uuid4()),
@@ -461,6 +463,7 @@ def test_batch_approval_is_atomic_and_resumes_run_once(client: TestClient):
             action.action_hash = compute_action_hash(action_snapshot(action))
             db.add(action)
             db.flush()
+            action_ids.append(action.id)
             approval = Approval(
                 id=str(uuid4()),
                 action_id=action.id,
@@ -503,27 +506,46 @@ def test_batch_approval_is_atomic_and_resumes_run_once(client: TestClient):
         assert set(db.scalars(select(Approval.decision).join(Action).where(Action.run_id == run_id))) == {"pending"}
         assert db.get(AgentRun, run_id).status == "waiting_for_approval"
 
+    unknown_selection = client.post(
+        f"/api/agent-runs/{run_id}/approvals/approve",
+        headers=headers,
+        json={"approvals": approvals, "selected_approval_ids": ["not-in-this-batch"]},
+    )
+    assert unknown_selection.status_code == 409
+    with SessionLocal() as db:
+        assert set(db.scalars(select(Approval.decision).join(Action).where(Action.run_id == run_id))) == {"pending"}
+
+    selected_id = approvals[0]["approval_id"]
     approved = client.post(
         f"/api/agent-runs/{run_id}/approvals/approve",
         headers=headers,
-        json={"approvals": approvals},
+        json={"approvals": approvals, "selected_approval_ids": [selected_id]},
     )
     assert approved.status_code == 200
-    assert {item["decision"] for item in approved.json()["approvals"]} == {"approved"}
+    assert {item["decision"] for item in approved.json()["approvals"]} == {"approved", "rejected"}
     assert approved.json()["run_summary"]["status"] == "queued"
     with SessionLocal() as db:
-        assert set(db.scalars(select(Approval.decision).join(Action).where(Action.run_id == run_id))) == {"approved"}
-        assert set(db.scalars(select(Action.status).where(Action.run_id == run_id))) == {"approved"}
+        decisions = dict(db.execute(select(Approval.id, Approval.decision).join(Action).where(Action.run_id == run_id)))
+        action_statuses = dict(db.execute(select(Approval.id, Action.status).join(Action).where(Action.run_id == run_id)))
+        assert decisions[selected_id] == "approved"
+        assert action_statuses[selected_id] == "approved"
+        assert {value for key, value in decisions.items() if key != selected_id} == {"rejected"}
+        assert {value for key, value in action_statuses.items() if key != selected_id} == {"rejected"}
         run = db.get(AgentRun, run_id)
         assert run.status == "queued" and run.current_step == "queued_resume"
         message = db.get(ChatMessage, assistant_message_id)
         assert message.metadata_json["run_status"] == "queued"
-        assert {item["decision"] for item in message.metadata_json["approvals"]} == {"approved"}
+        message_approvals = {item["id"]: item for item in message.metadata_json["approvals"]}
+        assert message_approvals[selected_id]["decision"] == "approved"
+        assert {
+            item["reason_code"] for key, item in message_approvals.items() if key != selected_id
+        } == {"USER_BATCH_NOT_SELECTED"}
+    assert OpsAgentGraph.route_approval({"action_ids": action_ids}) == "execute"
 
     repeated = client.post(
         f"/api/agent-runs/{run_id}/approvals/approve",
         headers=headers,
-        json={"approvals": approvals},
+        json={"approvals": approvals, "selected_approval_ids": [selected_id]},
     )
     assert repeated.status_code == 409
 
