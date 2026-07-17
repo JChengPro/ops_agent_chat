@@ -37,6 +37,11 @@ class MonitorEvent(Base):
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     occurrence_count: Mapped[int] = mapped_column(default=1)
     remediation_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    diagnostic_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_runs.id"), nullable=True, unique=True, index=True
+    )
+    diagnosis_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnosed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

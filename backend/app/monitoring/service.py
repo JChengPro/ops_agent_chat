@@ -15,6 +15,7 @@ from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.monitoring import MonitorEvent
 from app.models.project import Connection, Environment, Project
+from app.monitoring.diagnostics import queue_critical_diagnosis
 from app.policy.action_hash import action_snapshot, compute_action_hash
 from app.policy.engine import PolicyEngine
 from app.runtime.executor import RuntimeExecutor
@@ -78,7 +79,9 @@ def process_environment_monitor(
             "summary": f"{environment.name} 环境巡检失败，无法读取服务状态",
             "details": {"error_code": observation.get("error_code"), "result": observation.get("summary")},
         }
-        events.append(_upsert_event(db, run, environment, issue))
+        event = _upsert_event(db, run, environment, issue)
+        events.append(event)
+        queue_critical_diagnosis(db, event, project, environment, session_id=run.session_id)
         environment.last_monitored_at = datetime.now(timezone.utc)
         _finish_monitor_run(db, run, events, failed=True)
         logger.warning("Environment %s monitoring failed: %s", environment.id, observation.get("summary"))
@@ -90,6 +93,7 @@ def process_environment_monitor(
     for issue in issues:
         event = _upsert_event(db, run, environment, issue)
         events.append(event)
+        queue_critical_diagnosis(db, event, project, environment, session_id=run.session_id)
         if _eligible_for_automatic_start(environment, issue, event):
             _attempt_automatic_start(db, run, environment, project.owner_id, event, runtime)
     environment.last_monitored_at = datetime.now(timezone.utc)
@@ -115,7 +119,7 @@ def detect_service_issues(environment: Environment, data: dict[str, Any]) -> lis
     }]
 
 
-def monitor_event_out(item: MonitorEvent) -> dict[str, Any]:
+def monitor_event_out(item: MonitorEvent, diagnostic_run: AgentRun | None = None) -> dict[str, Any]:
     return {
         "id": item.id,
         "project_id": item.project_id,
@@ -129,6 +133,10 @@ def monitor_event_out(item: MonitorEvent) -> dict[str, Any]:
         "details_json": item.details_json,
         "occurrence_count": item.occurrence_count,
         "remediation_action_id": item.remediation_action_id,
+        "diagnostic_run_id": item.diagnostic_run_id,
+        "diagnostic_run_status": diagnostic_run.status if diagnostic_run else None,
+        "diagnosis_summary": item.diagnosis_summary,
+        "diagnosed_at": item.diagnosed_at,
         "detected_at": item.detected_at,
         "last_seen_at": item.last_seen_at,
         "resolved_at": item.resolved_at,

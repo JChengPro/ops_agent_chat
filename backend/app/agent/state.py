@@ -9,6 +9,9 @@ class AgentState(TypedDict, total=False):
     environment_id: int | None
     question: str
     history: list[dict[str, Any]]
+    execution_mode: str
+    read_only: bool
+    monitor_event_id: str | None
     context: dict[str, Any]
     capabilities: list[dict[str, Any]]
     decision: dict[str, Any]

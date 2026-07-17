@@ -15,6 +15,7 @@ from app.models.evidence import EvidenceClaim, EvidenceClaimLink, RuntimeEvidenc
 from app.audit.service import append_audit_event
 from app.agent.status import TERMINAL_RUN_STATUSES, cancel_unstarted_actions, mark_executing_actions_unknown
 from app.core.config import get_settings
+from app.monitoring.diagnostics import finalize_monitor_diagnosis
 from app.utils.public_config import public_config
 
 logger = logging.getLogger(__name__)
@@ -69,11 +70,16 @@ def execute_run(db: Session, agent, run: AgentRun) -> dict:
     user_message = db.get(ChatMessage, run.user_message_id)
     if not session or not user_message:
         raise ValueError("Agent run has no session or user message")
-    history_rows = db.scalars(select(ChatMessage).where(ChatMessage.session_id == session.id, ChatMessage.id != user_message.id).order_by(ChatMessage.created_at.desc()).limit(12)).all()
+    control = run.request_json if isinstance(run.request_json, dict) else {}
+    execution_mode = str(control.get("execution_mode") or "interactive")
+    history_rows = [] if execution_mode == "monitor_diagnosis" else db.scalars(select(ChatMessage).where(ChatMessage.session_id == session.id, ChatMessage.id != user_message.id).order_by(ChatMessage.created_at.desc()).limit(12)).all()
     initial = {
         "run_id": run.id, "user_id": run.user_id, "session_id": session.id,
         "project_id": session.project_id, "environment_id": session.environment_id,
         "question": user_message.content, "history": [{"role": item.role, "content": item.content} for item in reversed(history_rows)],
+        "execution_mode": execution_mode,
+        "read_only": control.get("read_only") is True,
+        "monitor_event_id": control.get("monitor_event_id"),
     }
     result = agent.graph.invoke(initial, config=_graph_config(run.id))
     return _persist_result(db, run, result)
@@ -155,7 +161,9 @@ def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
     run.lease_owner = None
     run.lease_expires_at = None
     run.heartbeat_at = datetime.now(timezone.utc)
-    db.commit(); db.refresh(message); db.refresh(run)
+    db.commit()
+    finalize_monitor_diagnosis(db, run.id)
+    db.refresh(message); db.refresh(run)
     return {"assistant_message": message_out(message), "run_summary": run_out(run), "approvals": approval_payload}
 
 

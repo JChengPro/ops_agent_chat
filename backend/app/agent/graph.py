@@ -16,6 +16,7 @@ from app.core.database import SessionLocal
 from app.llm.gateway import LLMGateway, StructuredDecisionError
 from app.models.action import Action, Approval, PolicyDecision
 from app.models.agent import AgentRun, AgentStep
+from app.models.monitoring import MonitorEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
 from app.policy.action_hash import action_snapshot, compute_action_hash, configuration_revision
 from app.policy.engine import PolicyEngine, permissions_for_role
@@ -154,7 +155,14 @@ class OpsAgentGraph:
                         "runtime_type": environment.runtime_type,
                         "policy_profile": environment.policy_profile,
                     }
-            capabilities = [item.model_schema() for item in registry.resolve(runtime_type, permissions)]
+            definitions = registry.resolve(runtime_type, permissions)
+            if state.get("read_only"):
+                definitions = [item for item in definitions if item.effect == "read"]
+            context["execution_mode"] = state.get("execution_mode") or "interactive"
+            context["read_only"] = bool(state.get("read_only"))
+            if state.get("monitor_event_id"):
+                context["monitor_event_id"] = state["monitor_event_id"]
+            capabilities = [item.model_schema() for item in definitions]
             self._step(db, state, "resolve_capabilities", {"count": len(capabilities), "runtime": runtime_type})
             db.commit()
         return {"context": context, "capabilities": capabilities, "evidence": [], "tool_call_count": 0, "step_count": 1, "status": "running"}
@@ -191,6 +199,48 @@ class OpsAgentGraph:
                 return {"decision": {}, "pending_calls": [], "answer": "本次处理已由其他恢复流程安全终止。", "status": "failed"}
         with SessionLocal() as db:
             run = db.get(AgentRun, state["run_id"])
+            bootstrap_calls = self._monitor_diagnostic_calls(db, state)
+            if bootstrap_calls:
+                request = {
+                    "goal": "investigate",
+                    "scope": "runtime",
+                    "time_focus": "current",
+                    "requested_effect": "read",
+                    "subjects": [],
+                    "desired_output": "diagnosis",
+                    "constraints": ["automatic read-only diagnosis"],
+                    "confidence": 1.0,
+                    "summary": "自动收集严重巡检事件的实时状态和日志",
+                }
+                controls = {
+                    key: run.request_json[key]
+                    for key in ("source", "execution_mode", "read_only", "monitor_event_id")
+                    if isinstance(run.request_json, dict) and key in run.request_json
+                }
+                payload = {
+                    "decision": "invoke_tools",
+                    "request": request,
+                    "tool_calls": bootstrap_calls,
+                    "answer": None,
+                    "clarification_question": None,
+                    "claims": [],
+                }
+                run.request_json = {**request, **controls}
+                run.plan_json = {"tool_calls": bootstrap_calls, "source": "monitor_diagnostic_bootstrap"}
+                self._step(
+                    db,
+                    state,
+                    "decision",
+                    {"decision": "invoke_tools", "tool_calls": len(bootstrap_calls), "source": "monitor_diagnostic_bootstrap"},
+                )
+                db.commit()
+                return {
+                    "decision": payload,
+                    "pending_calls": bootstrap_calls,
+                    "answer": "",
+                    "claims": [],
+                    "step_count": state.get("step_count", 0) + 1,
+                }
             try:
                 decision = self.gateway.decide(
                     db,
@@ -203,7 +253,12 @@ class OpsAgentGraph:
                     cancel_check=lambda: self._run_cancelled(state["run_id"]),
                 )
                 payload = decision.model_dump(mode="json")
-                run.request_json = payload["request"]
+                controls = {
+                    key: run.request_json[key]
+                    for key in ("source", "execution_mode", "read_only", "monitor_event_id")
+                    if isinstance(run.request_json, dict) and key in run.request_json
+                }
+                run.request_json = {**payload["request"], **controls}
                 run.plan_json = {"tool_calls": payload["tool_calls"]}
                 self._step(db, state, "decision", {"decision": decision.decision, "tool_calls": len(decision.tool_calls)})
                 db.commit()
@@ -275,6 +330,40 @@ class OpsAgentGraph:
             run = db.get(AgentRun, run_id)
             return bool(not run or run.status in TERMINAL_RUN_STATUSES or run.cancel_requested_at)
 
+    @staticmethod
+    def _monitor_diagnostic_calls(db, state: AgentState) -> list[dict[str, Any]]:
+        if (
+            state.get("execution_mode") != "monitor_diagnosis"
+            or not state.get("read_only")
+            or state.get("evidence")
+            or not state.get("monitor_event_id")
+        ):
+            return []
+        event = db.get(MonitorEvent, state["monitor_event_id"])
+        if not event:
+            return []
+        available = {str(item.get("name")) for item in state.get("capabilities", [])}
+        if event.service_name == "__environment__":
+            return (
+                [{"capability": "service.list", "arguments": {}, "purpose": "复核当前环境的服务状态"}]
+                if "service.list" in available
+                else []
+            )
+        calls = []
+        if "service.status" in available:
+            calls.append({
+                "capability": "service.status",
+                "arguments": {"service": event.service_name},
+                "purpose": f"复核 {event.service_name} 的实时状态",
+            })
+        if "service.logs" in available:
+            calls.append({
+                "capability": "service.logs",
+                "arguments": {"service": event.service_name, "tail": 100},
+                "purpose": f"读取 {event.service_name} 的最近 100 行日志",
+            })
+        return calls
+
     def prepare_actions(self, state: AgentState) -> dict:
         settings = get_settings()
         action_ids: list[str] = []
@@ -288,6 +377,9 @@ class OpsAgentGraph:
                 definition = registry.get(call["capability"])
                 if not definition or not any(item["name"] == call["capability"] for item in state.get("capabilities", [])):
                     observations.append({"capability": call["capability"], "status": "denied", "summary": "Capability is unavailable or not registered"})
+                    continue
+                if state.get("read_only") and definition.effect != "read":
+                    observations.append({"capability": definition.name, "status": "denied", "summary": "Automatic monitor diagnosis is strictly read-only"})
                     continue
                 decision_kind = state.get("decision", {}).get("decision")
                 if definition.effect == "change" and decision_kind != "propose_change":

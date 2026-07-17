@@ -1879,10 +1879,21 @@ code {
   border-bottom: 1px solid var(--border);
 }
 .monitor-event-list h4 { margin: 2px 6px 7px; color: var(--text-strong); font-size: 12px; }
-.monitor-event { display: grid; grid-template-columns: 9px minmax(0,1fr); align-items: center; gap: 9px; min-height: 52px; padding: 7px 6px; border-top: 1px solid var(--border); }
+.monitor-event { display: grid; grid-template-columns: 9px minmax(0,1fr); align-items: start; gap: 9px; min-height: 52px; padding: 9px 6px; border-top: 1px solid var(--border); }
+.monitor-event > .status-dot { margin-top: 5px; }
 .monitor-event > span { min-width: 0; display: grid; gap: 3px; }
 .monitor-event strong { color: var(--text-strong); font-size: 12px; line-height: 1.4; }
 .monitor-event small { color: var(--muted); font-size: 10px; line-height: 1.35; }
+.monitor-event.critical strong { color: #9f2d2d; }
+.monitor-diagnosis-state { color: #9a6700 !important; font-weight: 650; }
+.monitor-diagnosis { margin-top: 5px; border-top: 1px solid var(--border); padding-top: 7px; }
+.monitor-diagnosis > summary { cursor: pointer; color: var(--text-strong); font-size: 11px; font-weight: 680; }
+.monitor-diagnosis .natural-answer { max-height: 230px; overflow: auto; margin-top: 7px; padding-right: 4px; }
+.monitor-diagnosis .answer-paragraph { margin: 0 0 7px; }
+.monitor-diagnosis .answer-paragraph p,
+.monitor-diagnosis .answer-paragraph h4 { margin: 3px 0; color: var(--text); font-size: 11px; line-height: 1.5; }
+.monitor-diagnosis > button { width: 100%; min-height: 31px; margin-top: 7px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text-strong); font-size: 11px; font-weight: 650; }
+.monitor-diagnosis > button:hover { background: var(--surface-hover); }
 .status-dot.running, .status-dot.waiting_for_approval { background: #b7791f; }
 .activity-detail { padding: 0 8px 10px 24px; }
 .activity-detail p { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin: 8px 0; color: var(--muted); font-size: 12px; }

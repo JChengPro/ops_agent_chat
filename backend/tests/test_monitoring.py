@@ -1,12 +1,19 @@
 import json
 from uuid import uuid4
 
+from langgraph.checkpoint.postgres import PostgresSaver
 from sqlalchemy import select
 
+from app.agent.graph import OpsAgentGraph
+from app.agent.service import claim_run, process_claimed_run
 from app.core.database import SessionLocal
+from app.core.config import get_settings
 from app.core.security import hash_password
 from app.evidence.service import record_result
+from app.llm.gateway import LLMGateway
+from app.llm.providers.fake import FakeDecisionProvider
 from app.models.action import Action, Approval
+from app.models.agent import AgentRun
 from app.models.context import ProjectEntity
 from app.models.monitoring import MonitorEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
@@ -44,6 +51,71 @@ class MonitorExecutor:
             "data": result.data,
             "error_code": result.error_code,
         }
+
+
+class UnhealthyMonitorExecutor(MonitorExecutor):
+    def execute(self, db, action, capability):
+        if action.capability_name != "service.list":
+            return super().execute(db, action, capability)
+        self.calls.append(action.capability_name)
+        records = [{"Service": "frontend", "State": "running", "ExitCode": 0, "Health": "unhealthy"}]
+        result = AdapterResult(
+            "success",
+            "服务状态已读取",
+            {"records": records, "parse_valid": True, "stdout": json.dumps(records)},
+        )
+        evidence = record_result(db, action, "monitor-test", result)
+        return {
+            "evidence_id": evidence.id,
+            "capability": action.capability_name,
+            "status": result.status,
+            "summary": result.summary,
+            "data": result.data,
+            "error_code": result.error_code,
+        }
+
+
+class DiagnosisExecutor:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def execute(self, db, action, capability):
+        assert capability.effect == "read"
+        self.calls.append(action.capability_name)
+        if action.capability_name == "service.status":
+            records = [{"Service": "frontend", "State": "running", "ExitCode": 0, "Health": "unhealthy"}]
+            result = AdapterResult(
+                "success",
+                "已复核 frontend 状态",
+                {"records": records, "parse_valid": True, "stdout": json.dumps(records)},
+            )
+        elif action.capability_name == "service.logs":
+            result = AdapterResult(
+                "success",
+                "已读取 frontend 最近日志",
+                {"stdout": "health check failed: upstream connection refused"},
+            )
+        else:
+            raise AssertionError(f"Unexpected diagnosis capability: {action.capability_name}")
+        evidence = record_result(db, action, "monitor-diagnosis-test", result)
+        db.flush()
+        return {
+            "evidence_id": evidence.id,
+            "capability": action.capability_name,
+            "status": result.status,
+            "summary": result.summary,
+            "data": result.data,
+            "error_code": result.error_code,
+            "observed_at": evidence.observed_at.isoformat(),
+            "fresh_until": evidence.fresh_until.isoformat() if evidence.fresh_until else None,
+        }
+
+    def rollback(self, db, action, capability):
+        del db, action, capability
+        raise AssertionError("Read-only diagnosis must never roll back a change")
+
+    def finalize(self, db, action, capability):
+        del db, action, capability
 
 
 def create_monitored_environment(*, policy_profile: str, auto_remediation: bool) -> int:
@@ -140,3 +212,88 @@ def test_disabled_monitor_is_not_claimed_or_processed():
         db.commit()
         assert process_environment_monitor(db, environment_id, executor=MonitorExecutor()) == []
         assert db.scalar(select(MonitorEvent).where(MonitorEvent.environment_id == environment_id)) is None
+
+
+def test_critical_event_queues_one_read_only_diagnosis_and_persists_recommendation():
+    environment_id = create_monitored_environment(policy_profile="production", auto_remediation=False)
+    monitor_executor = UnhealthyMonitorExecutor()
+
+    with SessionLocal() as db:
+        first = process_environment_monitor(db, environment_id, executor=monitor_executor)
+        assert len(first) == 1
+        event = first[0]
+        assert event.severity == "critical"
+        assert event.status == "open"
+        assert event.diagnostic_run_id
+        diagnostic_run_id = event.diagnostic_run_id
+        run = db.get(AgentRun, diagnostic_run_id)
+        assert run and run.status == "queued"
+        assert run.request_json["execution_mode"] == "monitor_diagnosis"
+        assert run.request_json["read_only"] is True
+        assert run.request_json["monitor_event_id"] == event.id
+
+        repeated = process_environment_monitor(db, environment_id, executor=monitor_executor)
+        assert len(repeated) == 1
+        assert repeated[0].id == event.id
+        assert repeated[0].diagnostic_run_id == diagnostic_run_id
+
+    decisions = [
+        {
+            "decision": "propose_change",
+            "request": {
+                "goal": "change",
+                "scope": "runtime",
+                "time_focus": "current",
+                "requested_effect": "change",
+                "subjects": [],
+                "desired_output": "repair",
+                "constraints": [],
+                "confidence": 0.9,
+                "summary": "尝试越权停止服务",
+            },
+            "tool_calls": [{"capability": "service.stop", "arguments": {"service": "frontend"}, "purpose": "stop"}],
+            "answer": None,
+            "clarification_question": None,
+        },
+        {
+            "decision": "respond",
+            "request": {
+                "goal": "investigate",
+                "scope": "runtime",
+                "time_focus": "current",
+                "requested_effect": "read",
+                "subjects": [],
+                "desired_output": "diagnosis",
+                "constraints": ["read-only"],
+                "confidence": 0.9,
+                "summary": "生成诊断建议",
+            },
+            "tool_calls": [],
+            "answer": "frontend 仍在运行，但健康检查失败。日志显示上游连接被拒绝，建议先核对依赖服务和健康检查地址，再由用户决定是否批准重启。",
+            "clarification_question": None,
+            "claims": [],
+        },
+    ]
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        diagnosis_executor = DiagnosisExecutor()
+        graph = OpsAgentGraph(
+            checkpointer=saver,
+            gateway=LLMGateway(FakeDecisionProvider(decisions)),
+            executor=diagnosis_executor,
+        )
+        with SessionLocal() as db:
+            claimed = claim_run(db, "monitor-diagnosis-worker", diagnostic_run_id)
+            assert claimed and claimed.id == diagnostic_run_id
+            result = process_claimed_run(db, graph, claimed, "monitor-diagnosis-worker")
+            assert result["run_summary"]["status"] == "completed"
+            db.expire_all()
+            event = db.scalar(select(MonitorEvent).where(MonitorEvent.diagnostic_run_id == diagnostic_run_id))
+            assert event and event.diagnosed_at is not None
+            assert "健康检查失败" in event.diagnosis_summary
+            assert "用户决定是否批准重启" in event.diagnosis_summary
+            actions = list(db.scalars(select(Action).where(Action.run_id == diagnostic_run_id)))
+            assert {item.capability_name for item in actions} == {"service.status", "service.logs"}
+            assert all(item.effect == "read" for item in actions)
+            assert db.scalar(select(Approval).join(Action).where(Action.run_id == diagnostic_run_id)) is None
+            assert diagnosis_executor.calls == ["service.status", "service.logs"]

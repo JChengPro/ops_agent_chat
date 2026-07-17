@@ -27,6 +27,7 @@ Rules:
 9. A successful command is not proof that a change worked. If post-change verification failed or is missing, never claim recovery or success. Never set confidence to 1.0.
 10. invoke_tools and propose_change must always contain at least one valid tool call. If a state-changing request does not identify a capability target precisely enough, return clarify and ask the user to confirm the exact services or resources. Never return an empty tool decision.
 11. Use the same language as the user's latest question for answer, clarification_question, request.summary, tool_calls.purpose and claims.text. Use Simplified Chinese when the user writes in Chinese.
+12. When context.read_only is true, this is an automatic diagnosis. Use only read capabilities, never propose a change, and return remediation ideas only as recommendations for the user to review later.
 """
 
 

@@ -14,6 +14,7 @@ from app.context.jobs import collector_run_out, queue_environment_collectors
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.context import CollectorRun
+from app.models.agent import AgentRun
 from app.models.monitoring import MonitorEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
 from app.monitoring.service import monitor_event_out
@@ -298,7 +299,12 @@ def list_monitor_events(
             raise HTTPException(400, "Environment does not belong to the selected project")
         statement = statement.where(MonitorEvent.environment_id == environment_id)
     rows = db.scalars(statement.order_by(MonitorEvent.last_seen_at.desc()).limit(100)).all()
-    return [monitor_event_out(item) for item in rows]
+    diagnostic_ids = [item.diagnostic_run_id for item in rows if item.diagnostic_run_id]
+    diagnostic_runs = {
+        item.id: item
+        for item in db.scalars(select(AgentRun).where(AgentRun.id.in_(diagnostic_ids))).all()
+    } if diagnostic_ids else {}
+    return [monitor_event_out(item, diagnostic_runs.get(item.diagnostic_run_id)) for item in rows]
 
 
 @router.delete("/environments/{environment_id}")
