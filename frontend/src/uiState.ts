@@ -10,6 +10,22 @@ export function shouldApplySessionResult(currentSessionId: number | null, target
   return currentSessionId === targetSessionId;
 }
 
+export function chatMessagesRevision(rows: ChatMessage[]): string {
+  return rows.map(message => {
+    const approvals = (message.metadata_json.approvals || [])
+      .map(item => `${item.id}:${item.decision}:${item.consumed_at || ""}`)
+      .join(",");
+    return [
+      message.id,
+      message.role,
+      message.message_type,
+      message.content,
+      String(message.metadata_json.run_status || ""),
+      approvals,
+    ].join(":");
+  }).join("|");
+}
+
 export type MonitorNotice = {kind: "success" | "error" | "info"; text: string};
 export type EnvironmentMonitoringStatus = {
   tone: "enabled" | "warning" | "disabled";

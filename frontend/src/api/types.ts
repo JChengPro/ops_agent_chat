@@ -1,4 +1,6 @@
 export type User = { id: number; username: string; email: string; role: string };
+export type LLMSettings = { provider: string; base_url: string; model: string; api_key_configured: boolean; api_key_source: "user"|"deployment"|"none"; source: "user"|"deployment"; allowed_base_urls: string[] };
+export type LLMSettingsPayload = { provider: string; base_url: string; model: string; api_key?: string };
 export type Project = { id: number; owner_id: number; name: string; description?: string; settings_json: Record<string, unknown>; is_active: boolean; is_pinned: boolean; created_at?: string };
 export type Connection = { id: number; name: string; connection_type: string; host?: string; port?: number; username?: string; credential_configured: boolean; host_fingerprint_configured: boolean; status: string; config_json: Record<string, unknown> };
 export type ConnectionPayload = { name: string; connection_type?: string; host: string|null; port: number; username: string|null; credential_ref?: string|null; host_fingerprint?: string|null; config_json?: Record<string, unknown> };

@@ -8,6 +8,7 @@ from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.llm.configuration import ResolvedLLMConfiguration, resolve_llm_configuration
 from app.llm.schemas import AgentDecision
 from app.models.agent import ModelCall
 
@@ -63,6 +64,7 @@ class LLMGateway:
     ) -> AgentDecision:
         started = time.monotonic()
         settings = get_settings()
+        configuration = None
         total_budget = max(10000, settings.agent_context_max_chars)
         request = {
             "question": question[:20000],
@@ -76,10 +78,12 @@ class LLMGateway:
         response_json: dict[str, Any] = {}
         input_tokens = output_tokens = None
         try:
+            if not self.provider:
+                configuration = resolve_llm_configuration(db, run_id)
             if cancel_check and cancel_check():
                 raise ModelCallCancelled("Agent run was cancelled before the model call")
             pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"model-{run_id[:8]}")
-            future = pool.submit(self._invoke_provider, settings, request)
+            future = pool.submit(self._invoke_provider, settings, configuration, request)
             deadline = time.monotonic() + max(5, settings.llm_timeout_seconds * 2 + 5)
             try:
                 while True:
@@ -110,8 +114,8 @@ class LLMGateway:
             db.add(
                 ModelCall(
                     run_id=run_id,
-                    provider=settings.llm_provider,
-                    model=settings.llm_model,
+                    provider=configuration.provider if configuration else settings.llm_provider,
+                    model=configuration.model if configuration else settings.llm_model,
                     purpose="decision",
                     prompt_version=self.prompt_version,
                     input_token_count=input_tokens,
@@ -124,15 +128,24 @@ class LLMGateway:
             )
             db.flush()
 
-    def _invoke_provider(self, settings, request: dict[str, Any]) -> tuple[AgentDecision, int | None, int | None]:
+    def _invoke_provider(
+        self,
+        settings,
+        configuration: ResolvedLLMConfiguration | None,
+        request: dict[str, Any],
+    ) -> tuple[AgentDecision, int | None, int | None]:
         if self.provider:
             return self.provider.decide(**request), None, None
-        if not settings.llm_configured:
-            raise RuntimeError("LLM API key is not configured")
-        client = OpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url, timeout=settings.llm_timeout_seconds)
+        if not configuration:
+            raise RuntimeError("模型配置不可用")
+        client = OpenAI(
+            api_key=configuration.api_key,
+            base_url=configuration.base_url,
+            timeout=settings.llm_timeout_seconds,
+        )
         payload = json.dumps(request, ensure_ascii=False, default=str)
         completion = client.chat.completions.create(
-            model=settings.llm_model,
+            model=configuration.model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT + "\nJSON Schema:\n" + json.dumps(AgentDecision.model_json_schema())},
                 {"role": "user", "content": payload},
@@ -145,7 +158,7 @@ class LLMGateway:
             decision = AgentDecision.model_validate(_normalize_decision_payload(json.loads(raw)))
         except Exception as first_error:
             repair = client.chat.completions.create(
-                model=settings.llm_model,
+                model=configuration.model,
                 messages=[
                     {
                         "role": "system",

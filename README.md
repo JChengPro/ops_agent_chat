@@ -148,16 +148,17 @@ LangGraph Agent
 cp .env.example .env
 ```
 
-至少修改以下配置：
+必须修改应用密钥和管理员密码。模型配置可以写在 `.env` 中作为所有用户的部署默认值，也可以在首次登录后通过“模型设置”填写：
 
 ```env
 APP_SECRET_KEY=replace-with-a-long-random-string
 ADMIN_PASSWORD=replace-with-a-strong-password
 
-DEEPSEEK_API_KEY=your-api-key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=your-api-key
+LLM_BASE_URL=https://api.deepseek.com
 LLM_PROVIDER=deepseek
 LLM_MODEL=your-actual-model-name
+LLM_ALLOWED_BASE_URLS=https://api.deepseek.com,https://api.openai.com/v1
 
 VIDEOHUB_WORKDIR=/home/your-user/project
 VIDEOHUB_SSH_HOST=host.docker.internal
@@ -167,7 +168,9 @@ VIDEOHUB_SSH_KEY_PATH=/run/secrets/videohub_ssh_key
 VIDEOHUB_SSH_HOST_FINGERPRINT=SHA256:your-host-key-fingerprint
 ```
 
-模型接口采用 OpenAI-compatible 形式。示例使用 DeepSeek，但项目并不绑定特定厂商或固定模型名称。
+模型接口采用 OpenAI-compatible 形式。示例使用 DeepSeek，但项目并不绑定特定厂商或固定模型名称。部署默认模型可以不填写 Key；登录后点击左下角用户名进入“模型设置”，可为当前账号单独配置供应商、Base URL、模型和 API Key。
+
+用户填写的 API Key 会在服务端加密保存，接口只返回“是否已配置”，不会把原始 Key 返回浏览器。自定义模型地址必须先加入部署端的 `LLM_ALLOWED_BASE_URLS`，避免任意地址被用作服务端请求目标。
 
 ### 2. 准备 SSH 连接
 
@@ -320,8 +323,12 @@ Docker Compose 变更会继续检查：
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接地址 |
 | `APP_SECRET_KEY` | JWT 签名密钥 |
+| `LLM_API_KEY` | 可选的部署默认模型 API Key |
+| `LLM_BASE_URL` | 部署默认 OpenAI-compatible API 地址 |
 | `LLM_PROVIDER` | 模型供应商审计标识 |
 | `LLM_MODEL` | 实际调用的模型名称 |
+| `LLM_ALLOWED_BASE_URLS` | 前端用户配置允许使用的模型 API 地址列表 |
+| `LLM_CREDENTIAL_ENCRYPTION_KEY` | 可选的用户模型密钥加密材料；为空时使用 `APP_SECRET_KEY` 派生 |
 | `LLM_TIMEOUT_SECONDS` | 单次模型请求超时 |
 | `AGENT_TIMEOUT_SECONDS` | 单个 AgentRun 总时长上限 |
 | `AGENT_CONTEXT_MAX_CHARS` | 单次决策的上下文字符预算 |
@@ -451,6 +458,7 @@ docker-compose.yml         本地一键部署
 
 - `.env`、API Key、注册码和 SSH 私钥不得提交到 Git。
 - Connection API 只展示凭据和指纹是否已配置，不回传原始值。
+- 用户模型 API Key 只以密文保存，模型配置 API 不回传原始 Key。
 - Agent 只能调用 Registry 中已注册且当前用户有权限的 Capability。
 - Runtime Adapter 接收结构化参数，不向模型开放任意 Shell。
 - 高风险变更必须通过与 Action Hash 精确绑定的人工审批。
@@ -459,7 +467,7 @@ docker-compose.yml         本地一键部署
 - 未实现 verifier 或无法解析最终状态时拒绝标记成功。
 - 工具输出在传给模型前会进行截断和敏感信息处理。
 - 新注册用户不会获得其他项目或其他用户聊天记录的访问权限。
-- `/live` 只表示进程存活；`/ready` 和 `/health` 还检查数据库、checkpoint、模型配置、Agent 和 Worker。
+- `/live` 只表示进程存活；`/ready` 和 `/health` 还检查数据库、checkpoint、Agent 和 Worker，并报告当前是部署默认模型还是需要用户配置模型。
 
 ## 当前边界
 

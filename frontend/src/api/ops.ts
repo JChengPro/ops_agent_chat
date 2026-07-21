@@ -1,11 +1,14 @@
 import { apiFetch, setToken } from "./client";
-import type { Action, AgentRun, AgentStep, Approval, ApprovalBatchDecisionResponse, ApprovalDecisionResponse, ChatMessage, ChatSession, CollectorRun, Connection, ConnectionPayload, Entity, Environment, EnvironmentPayload, Evidence, ExperienceItem, MonitorEvent, Project, User } from "./types";
+import type { Action, AgentRun, AgentStep, Approval, ApprovalBatchDecisionResponse, ApprovalDecisionResponse, ChatMessage, ChatSession, CollectorRun, Connection, ConnectionPayload, Entity, Environment, EnvironmentPayload, Evidence, ExperienceItem, LLMSettings, LLMSettingsPayload, MonitorEvent, Project, User } from "./types";
 
 export async function login(username: string, password: string): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/login", {method:"POST",body:JSON.stringify({username,password})}); setToken(data.access_token); return data.user; }
 export const registrationConfig = () => apiFetch<{enabled:boolean;invite_code_required:boolean}>("/api/auth/registration");
 export async function registerAccount(payload:{username:string;email:string;password:string;password_confirmation:string;invite_code?:string}): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/register",{method:"POST",body:JSON.stringify(payload)}); setToken(data.access_token); return data.user; }
 export const logout = () => apiFetch<void>("/api/auth/logout",{method:"POST"});
 export const me = () => apiFetch<User>("/api/auth/me");
+export const getLLMSettings = () => apiFetch<LLMSettings>("/api/llm-settings");
+export const updateLLMSettings = (payload:LLMSettingsPayload) => apiFetch<LLMSettings>("/api/llm-settings",{method:"PUT",body:JSON.stringify(payload)});
+export const resetLLMSettings = () => apiFetch<LLMSettings>("/api/llm-settings",{method:"DELETE"});
 export const listProjects = () => apiFetch<Project[]>("/api/projects");
 export const createProject = (payload:{name:string;description?:string}) => apiFetch<Project>("/api/projects",{method:"POST",body:JSON.stringify(payload)});
 export const updateProject = (id:number,payload:Partial<Project>) => apiFetch<Project>(`/api/projects/${id}`,{method:"PATCH",body:JSON.stringify(payload)});

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,10 +15,21 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://opsagent:opsagent_password@localhost:5432/ops_agent_chat"
 
-    deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY")
-    deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
+    llm_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("LLM_API_KEY", "DEEPSEEK_API_KEY"),
+    )
+    llm_base_url: str = Field(
+        default="https://api.deepseek.com",
+        validation_alias=AliasChoices("LLM_BASE_URL", "DEEPSEEK_BASE_URL"),
+    )
     llm_provider: str = Field(default="deepseek", alias="LLM_PROVIDER")
     llm_model: str = Field(default="deepseek-v4-pro", alias="LLM_MODEL")
+    llm_allowed_base_urls: str = Field(
+        default="https://api.deepseek.com,https://api.openai.com/v1",
+        alias="LLM_ALLOWED_BASE_URLS",
+    )
+    llm_credential_encryption_key: str = Field(default="", alias="LLM_CREDENTIAL_ENCRYPTION_KEY")
     llm_reasoning_effort: str = Field(default="high", alias="LLM_REASONING_EFFORT")
     llm_thinking_enabled: bool = Field(default=True, alias="LLM_THINKING_ENABLED")
     llm_timeout_seconds: int = Field(default=90, alias="LLM_TIMEOUT_SECONDS")
@@ -63,8 +74,6 @@ class Settings(BaseSettings):
                 problems.append("DATABASE_URL must not use the development password")
             if not self.ssh_strict_host_key_checking:
                 problems.append("SSH_STRICT_HOST_KEY_CHECKING must be enabled")
-            if not self.llm_configured:
-                problems.append("The OpenAI-compatible LLM API key must be configured")
             if problems:
                 raise ValueError("Unsafe production configuration: " + "; ".join(problems))
         return self
@@ -79,8 +88,23 @@ class Settings(BaseSettings):
 
     @property
     def llm_configured(self) -> bool:
-        value = self.deepseek_api_key.strip()
-        return bool(value and value not in {"replace-with-your-deepseek-api-key", "replace-with-api-key", "your-api-key"})
+        value = self.llm_api_key.strip()
+        return bool(
+            value
+            and value
+            not in {
+                "replace-with-your-model-api-key",
+                "replace-with-your-deepseek-api-key",
+                "replace-with-api-key",
+                "your-api-key",
+            }
+        )
+
+    @property
+    def llm_allowed_base_url_list(self) -> list[str]:
+        configured = [item.strip().rstrip("/") for item in self.llm_allowed_base_urls.split(",") if item.strip()]
+        current = self.llm_base_url.strip().rstrip("/")
+        return list(dict.fromkeys([*configured, current]))
 
 
 @lru_cache

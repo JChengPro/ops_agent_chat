@@ -4,7 +4,8 @@ import { Activity, BadgeCheck, BookOpenText, ChevronRight, CircleAlert, CircleCh
 import { cancelCollectorRun, cancelRun, collectContext, createConnection, createEnvironment, createExperience, createProject, createSession, decideApprovalBatch, deleteConnection, deleteEnvironment, deleteExperience, deleteProject, deleteSession, getRun, listActions, listCollectorRuns, listConnections, listEntities, listEnvironments, listEvidence, listExperience, listGeneralRuns, listGeneralSessions, listMessages, listMonitorEvents, listProjects, listRuns, listSessions, listSteps, queueMessage, sendFeedback, testEnvironmentConnection, updateConnection, updateEnvironment, updateExperience, updateProject, updateSession } from "../api/ops";
 import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, Entity, Environment, Evidence, ExperienceItem, MonitorEvent, Project, User } from "../api/types";
 import { ProjectConfigDialog, type ProjectConfigurationValue } from "../components/ProjectConfigDialog";
-import { applyApprovalBatchResult, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../uiState";
+import { ModelSettingsDialog } from "../components/ModelSettingsDialog";
+import { applyApprovalBatchResult, chatMessagesRevision, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../uiState";
 
 type Tab = "activity" | "experience" | "config";
 type Menu = {type:"project"|"session";id:number;x:number;y:number}|null;
@@ -16,12 +17,13 @@ type ConfirmDialogState = {title:string;message:string;confirmLabel:string;onCon
 export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promise<void>}) {
   const [projects,setProjects]=useState<Project[]>([]), [sessions,setSessions]=useState<ChatSession[]>([]), [messages,setMessages]=useState<ChatMessage[]>([]);
   const [environments,setEnvironments]=useState<Environment[]>([]), [connections,setConnections]=useState<Connection[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [entities,setEntities]=useState<Entity[]>([]), [collectorRuns,setCollectorRuns]=useState<CollectorRun[]>([]), [monitorEvents,setMonitorEvents]=useState<MonitorEvent[]>([]);
-  const [projectId,setProjectId]=useState<number|null>(null), [sessionId,setSessionId]=useState<number|null>(null), [input,setInput]=useState(""), [sending,setSending]=useState(false);
+  const [projectId,setProjectId]=useState<number|null>(null), [sessionId,setSessionId]=useState<number|null>(null), [input,setInput]=useState("");
   const [projectsReady,setProjectsReady]=useState(false);
-  const [activeRunId,setActiveRunId]=useState<string|null>(null), [cancelling,setCancelling]=useState(false);
+  const [pendingRuns,setPendingRuns]=useState<Record<number,string>>({}), [cancellingRunId,setCancellingRunId]=useState<string|null>(null);
   const [tab,setTab]=useState<Tab>("activity"), [leftCollapsed,setLeftCollapsed]=useState(false), [rightCollapsed,setRightCollapsed]=useState(false), [navOpen,setNavOpen]=useState(false), [menu,setMenu]=useState<Menu>(null);
   const [notice,setNotice]=useState<{kind:"success"|"error"|"info";text:string}|null>(null), [approvalBusy,setApprovalBusy]=useState<ApprovalSubmission>(null), [collectorRefreshKey,setCollectorRefreshKey]=useState(0);
   const [projectConfigTarget,setProjectConfigTarget]=useState<ProjectConfigTarget>(null), [textDialog,setTextDialog]=useState<TextDialogState>(null), [confirmDialog,setConfirmDialog]=useState<ConfirmDialogState>(null);
+  const [modelSettingsOpen,setModelSettingsOpen]=useState(false);
   const endRef=useRef<HTMLDivElement|null>(null), composerRef=useRef<HTMLInputElement|null>(null), messageRefs=useRef<Record<number,HTMLElement|null>>({}), currentSessionRef=useRef<number|null>(null);
   const project=useMemo(()=>projects.find(x=>x.id===projectId)||null,[projects,projectId]);
   const session=useMemo(()=>sessions.find(x=>x.id===sessionId)||null,[sessions,sessionId]);
@@ -30,6 +32,11 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
   const activeEnvironment=useMemo(()=>environments.find(item=>item.id===session?.environment_id)||environments.find(item=>item.is_default)||environments[0]||null,[environments,session]);
   const monitoringStatus=useMemo(()=>environmentMonitoringStatus(activeEnvironment),[activeEnvironment]);
   const visibleRuns=useMemo(()=>runs.filter(run=>run.request_json?.source!=="terminal"),[runs]);
+  const backendActiveRun=useMemo(()=>visibleRuns.find(run=>!isRunPollingTerminal(run.status))||null,[visibleRuns]);
+  const pendingRun=sessionId?pendingRuns[sessionId]:undefined;
+  const activeRunId=backendActiveRun?.id||(pendingRun&&pendingRun!=="submitting"?pendingRun:null);
+  const sending=Boolean(backendActiveRun||pendingRun);
+  const cancelling=Boolean(activeRunId&&cancellingRunId===activeRunId);
 
   useEffect(()=>{void refreshProjects();},[]);
   useEffect(()=>{
@@ -80,8 +87,14 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
       if(disposed||document.hidden||requesting)return;
       requesting=true;
       try{
-        const latest=targetProjectId===null?await listGeneralRuns(targetSessionId):await listRuns(targetProjectId,targetSessionId);
-        if(!disposed&&shouldApplySessionResult(currentSessionRef.current,targetSessionId))setRuns(latest);
+        const [latestRuns,latestMessages]=await Promise.all([
+          targetProjectId===null?listGeneralRuns(targetSessionId):listRuns(targetProjectId,targetSessionId),
+          listMessages(targetSessionId),
+        ]);
+        if(!disposed&&shouldApplySessionResult(currentSessionRef.current,targetSessionId)){
+          setRuns(latestRuns);
+          setMessages(current=>chatMessagesRevision(current)===chatMessagesRevision(latestMessages)?current:latestMessages);
+        }
       }catch{
         // The next interval retries; avoid repeated global notices for a background refresh.
       }finally{
@@ -119,16 +132,16 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
   async function testConnection(environmentId:number){showNotice("info","正在测试 SSH 连接");try{const result=await testEnvironmentConnection(environmentId);if(projectId)setConnections(await listConnections(projectId));showNotice(result.ok?"success":"error",result.ok?"SSH 连接成功":result.message);}catch(error){showNotice("error",error instanceof Error?error.message:"SSH 连接测试失败");}}
   function useMonitorRecommendation(item:MonitorEvent){const diagnosis=(item.diagnosis_summary||"").slice(0,6000);setInput(`主动巡检发现：${item.summary}\n\n自动只读诊断：\n${diagnosis}\n\n请先复核当前最新状态并生成可审批的修复方案。不要绕过审批；如果已经恢复，请直接说明，无需创建变更。`);window.setTimeout(()=>composerRef.current?.focus(),0);showNotice("info","诊断建议已填入输入框，请确认或修改后发送");}
   async function waitForRun(runId:string,targetSessionId:number,targetProjectId:number|null){const deadline=Date.now()+5*60*1000;while(Date.now()<deadline){const run=await getRun(runId);await refreshSession(targetSessionId,targetProjectId);if(isRunPollingTerminal(run.status))return run;await new Promise(resolve=>window.setTimeout(resolve,800));}throw new Error("任务仍在后台运行，请稍后查看活动记录");}
-  async function submit(e:FormEvent){e.preventDefault();if(!sessionId||!input.trim()||sending)return;const targetSessionId=sessionId,targetProjectId=projectId,content=input.trim(),tempId=Date.now(),clientRequestId=crypto.randomUUID();setInput("");setSending(true);setMessages(x=>[...x,{id:tempId,session_id:targetSessionId,project_id:targetProjectId,role:"user",content,message_type:"text",metadata_json:{}}]);try{const queued=await queueMessage(targetSessionId,content,clientRequestId);setActiveRunId(queued.run_summary.id);setMessages(x=>x.map(m=>m.id===tempId?queued.user_message:m));await waitForRun(queued.run_summary.id,targetSessionId,targetProjectId);}catch(error){showNotice("error",error instanceof Error?error.message:"请求失败");await refreshSession(targetSessionId,targetProjectId);}finally{setActiveRunId(null);setCancelling(false);setSending(false);}}
-  async function stopRun(){if(!activeRunId||cancelling)return;setCancelling(true);try{await cancelRun(activeRunId);}finally{setCancelling(false);}}
+  async function submit(e:FormEvent){e.preventDefault();if(!sessionId||!input.trim()||sending)return;const targetSessionId=sessionId,targetProjectId=projectId,content=input.trim(),tempId=Date.now(),clientRequestId=crypto.randomUUID();setInput("");setPendingRuns(items=>({...items,[targetSessionId]:"submitting"}));setMessages(x=>[...x,{id:tempId,session_id:targetSessionId,project_id:targetProjectId,role:"user",content,message_type:"text",metadata_json:{}}]);try{const queued=await queueMessage(targetSessionId,content,clientRequestId);setPendingRuns(items=>({...items,[targetSessionId]:queued.run_summary.id}));setMessages(x=>x.map(m=>m.id===tempId?queued.user_message:m));await waitForRun(queued.run_summary.id,targetSessionId,targetProjectId);}catch(error){showNotice("error",error instanceof Error?error.message:"请求失败");await refreshSession(targetSessionId,targetProjectId);}finally{setPendingRuns(items=>{const next={...items};delete next[targetSessionId];return next;});setCancellingRunId(null);}}
+  async function stopRun(){if(!activeRunId||cancelling)return;const runId=activeRunId;setCancellingRunId(runId);try{await cancelRun(runId);}finally{setCancellingRunId(value=>value===runId?null:value);}}
   function toggleMenu(event:ReactMouseEvent<HTMLButtonElement>,type:"project"|"session",id:number){event.stopPropagation();if(menu?.type===type&&menu.id===id){setMenu(null);return;}const rect=event.currentTarget.getBoundingClientRect(),width=168,height=132,gap=6,padding=8;const x=Math.max(padding,Math.min(rect.right-width,window.innerWidth-width-padding));const y=rect.bottom+gap+height<=window.innerHeight-padding?rect.bottom+gap:Math.max(padding,rect.top-height-gap);setMenu({type,id,x,y});}
   async function mutateProject(item:Project,action:"rename"|"pin"|"delete"){setMenu(null);if(action==="rename")setTextDialog({title:"重命名项目",label:"项目名称",value:item.name,submitLabel:"保存",onSubmit:async name=>{const row=await updateProject(item.id,{name});setProjects(x=>sortProjects(x.map(v=>v.id===row.id?row:v)));}});else if(action==="pin"){const row=await updateProject(item.id,{is_pinned:!item.is_pinned});setProjects(x=>sortProjects(x.map(v=>v.id===row.id?row:v)));}else requestConfirm("删除项目",`项目“${item.name}”将从项目列表中移除。已有审计记录不会被删除。`,"删除项目",async()=>{await deleteProject(item.id);await refreshProjects();});}
   async function mutateSession(item:ChatSession,action:"rename"|"pin"|"delete"){setMenu(null);if(action==="rename")setTextDialog({title:"重命名聊天",label:"聊天名称",value:item.title,submitLabel:"保存",onSubmit:async title=>{const row=await updateSession(item.id,{title});setSessions(x=>sortSessions(x.map(v=>v.id===row.id?row:v)));}});else if(action==="pin"){const row=await updateSession(item.id,{is_pinned:!item.is_pinned});setSessions(x=>sortSessions(x.map(v=>v.id===row.id?row:v)));}else requestConfirm("删除聊天",`聊天“${item.title}”将被删除，之后不会再显示在聊天列表中。`,"删除聊天",async()=>{await deleteSession(item.id);const next=sessions.filter(v=>v.id!==item.id);setSessions(next);setSessionId(next[0]?.id??null);});}
   async function monitorApprovedRun(run:AgentRun,targetSessionId:number,targetProjectId:number|null,decision:"approve"|"reject"){
-    setSending(true);setActiveRunId(run.id);
+    setPendingRuns(items=>({...items,[targetSessionId]:run.id}));
     try{const finalRun=await waitForRun(run.id,targetSessionId,targetProjectId);if(decision==="reject")showNotice("success","审批批次已拒绝，本次变更未执行");else if(finalRun.status==="completed")showNotice("success","变更执行和验证已经完成");else showNotice("error","审批已记录，但变更流程未成功完成，请查看 Agent 活动");}
     catch(error){showNotice("error",error instanceof Error?error.message:"审批已记录，但执行状态刷新失败");await refreshSession(targetSessionId,targetProjectId);}
-    finally{setActiveRunId(null);setSending(false);}
+    finally{setPendingRuns(items=>{const next={...items};delete next[targetSessionId];return next;});}
   }
   async function approve(items:Approval[],decision:"approve"|"reject",selectedApprovalIds?:string[]){
     if(approvalBusy||!sessionId)return;
@@ -151,6 +164,7 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
   return <main className={`workspace ${leftCollapsed?"left-collapsed":""} ${rightCollapsed?"right-collapsed":""}`} onClick={()=>setMenu(null)}>
     {notice&&<div className={`notice ${notice.kind}`}><span>{notice.text}</span><button onClick={e=>{e.stopPropagation();setNotice(null);}}>×</button></div>}
     {projectConfigTarget&&<ProjectConfigDialog project={projectConfigTarget.project} environment={projectConfigTarget.environment} connection={projectConfigTarget.connection} onClose={()=>setProjectConfigTarget(null)} onSave={saveProjectConfiguration}/>}
+    {modelSettingsOpen&&<ModelSettingsDialog onClose={()=>setModelSettingsOpen(false)} onSaved={message=>showNotice("success",message)}/>}
     {textDialog&&<TextInputDialog {...textDialog} onClose={()=>setTextDialog(null)}/>}
     {confirmDialog&&<ConfirmDialog {...confirmDialog} onClose={()=>setConfirmDialog(null)}/>}
     {menuProject&&menu&&createPortal(<ActionMenu pinned={menuProject.is_pinned} x={menu.x} y={menu.y} onAction={action=>mutateProject(menuProject,action)}/>,document.body)}
@@ -169,7 +183,7 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
       <section className="left-block session-block"><div className="block-title"><span>聊天记录</span><button className="mini-create" onClick={newSession} title="新建聊天"><Plus size={15}/>新聊天</button></div><div className="session-scroll">
         {sessions.map(item=><div className="nav-entry" key={item.id}><div className={`nav-row ${item.id===sessionId?"selected":""}`}><button className="session-item" onClick={()=>setSessionId(item.id)} title={item.title}><MessageSquare size={16}/><span>{item.title}</span>{item.is_pinned&&<Pin size={13}/>}</button><MoreButton onClick={event=>toggleMenu(event,"session",item.id)}/></div></div>)}
       </div></section>
-      <button className="logout" onClick={onLogout}><UserCircle size={25}/><span>{user.username}</span><LogOut size={17}/></button>
+      <div className="account-footer"><button className="account-settings" onClick={()=>setModelSettingsOpen(true)} title="模型设置"><UserCircle size={25}/><span>{user.username}</span><Settings size={17}/></button><button className="account-logout" onClick={onLogout} title="退出登录" aria-label="退出登录"><LogOut size={17}/></button></div>
     </aside>
     <section className="glass-panel chat-pane"><header className="chat-header"><div><strong>{project?.name??"通用聊天"}</strong><span>{session?.title??"新会话"}</span></div><div className="chat-header-actions">{project&&activeEnvironment&&<><select className="environment-select" value={activeEnvironment.id} onChange={event=>void selectEnvironment(Number(event.target.value))} title="当前运行环境">{environments.map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select><button type="button" className={`monitoring-status-chip ${monitoringStatus.tone}`} title={`${monitoringStatus.detail} 点击打开配置。`} onClick={()=>configureEnvironment(activeEnvironment)}><Activity size={14}/><span>{monitoringStatus.label}</span></button></>}<button className={`outline-toggle ${navOpen?"active":""}`} onClick={()=>setNavOpen(x=>!x)} title="消息导航"><MessageSquare size={17}/></button><span className="mode-badge">受控运维</span></div></header>
       <MessageNav open={navOpen} messages={messages} jump={id=>messageRefs.current[id]?.scrollIntoView({behavior:"smooth",block:"center"})}/>

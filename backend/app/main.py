@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres import PostgresSaver
 
-from app.api import agent_runs, approvals, auth, chat, connections, context_experience, governance, projects
+from app.api import agent_runs, approvals, auth, chat, connections, context_experience, governance, llm_settings, projects
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.database import get_db
@@ -39,7 +39,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-for router in (auth.router, connections.router, projects.router, chat.router, agent_runs.router, approvals.router, context_experience.router, governance.router):
+for router in (auth.router, connections.router, projects.router, chat.router, agent_runs.router, approvals.router, context_experience.router, governance.router, llm_settings.router):
     app.include_router(router, prefix="/api")
 
 
@@ -74,8 +74,6 @@ def ready(request: Request, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=503, detail="Database is not ready") from exc
     if not agent_ready:
         raise HTTPException(status_code=503, detail="Agent graph is not ready")
-    if not settings.llm_configured:
-        raise HTTPException(status_code=503, detail="LLM provider is not configured")
     worker_cutoff = datetime.now(timezone.utc) - timedelta(seconds=15)
     worker_ready = db.scalar(select(AgentWorker.id).where(AgentWorker.status == "running", AgentWorker.last_seen_at >= worker_cutoff).limit(1))
     if not worker_ready:
@@ -84,7 +82,13 @@ def ready(request: Request, db: Session = Depends(get_db)) -> dict:
         "status": "ok",
         "service": "ops-agent-chat-backend",
         "version": APP_VERSION,
-        "checks": {"database": "ok", "checkpointer": "ok", "agent": "ok", "model": "configured", "worker": "ok"},
+        "checks": {
+            "database": "ok",
+            "checkpointer": "ok",
+            "agent": "ok",
+            "model": "deployment_default" if settings.llm_configured else "user_configuration_required",
+            "worker": "ok",
+        },
     }
 
 

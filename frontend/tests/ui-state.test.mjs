@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { validateRegistration } from "../src/authState.ts";
-import { applyApprovalBatchResult, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../src/uiState.ts";
+import { applyApprovalBatchResult, chatMessagesRevision, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../src/uiState.ts";
 
 test("registration form validates identity, password and optional invite code", () => {
   const valid = {username: "new-user", email: "new@example.test", password: "secure-pass-123", passwordConfirmation: "secure-pass-123", inviteCode: "invite"};
@@ -65,6 +65,15 @@ test("late polling results cannot replace a newly selected session", () => {
   assert.equal(shouldApplySessionResult(12, 12), true);
   assert.equal(shouldApplySessionResult(13, 12), false);
   assert.equal(shouldApplySessionResult(null, 12), false);
+});
+
+test("message polling detects final answers and approval state changes", () => {
+  const base = {id:1,session_id:1,project_id:null,role:"assistant",content:"",message_type:"approval",metadata_json:{run_status:"running",approvals:[]}};
+  const completed = {...base,content:"处理完成",metadata_json:{...base.metadata_json,run_status:"completed"}};
+  const approved = {...base,metadata_json:{run_status:"waiting_for_approval",approvals:[{id:"approval-1",decision:"approved",consumed_at:"now"}]}};
+  assert.notEqual(chatMessagesRevision([base]),chatMessagesRevision([completed]));
+  assert.notEqual(chatMessagesRevision([base]),chatMessagesRevision([approved]));
+  assert.equal(chatMessagesRevision([completed]),chatMessagesRevision([{...completed}]));
 });
 
 test("activity labels localize capabilities and historical English evidence", () => {

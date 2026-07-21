@@ -18,6 +18,7 @@ from app.core.config import Settings
 from app.core.database import SessionLocal
 from app.core.security import create_access_token, hash_password, verify_password
 from app.llm.gateway import LLMGateway, ModelCallCancelled
+from app.llm.configuration import decrypt_api_key, resolve_llm_configuration
 from app.llm.schemas import AgentDecision
 from app.main import app
 from app.models.action import Action, Approval
@@ -25,7 +26,7 @@ from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.governance import AgentWorker, AuditEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
-from app.models.user import User
+from app.models.user import User, UserLLMSettings
 from app.services.seed_service import seed_initial_data
 from app.version import APP_VERSION
 
@@ -151,7 +152,7 @@ def test_health_checks_dependencies_and_reports_consistent_version(client: TestC
     ready = client.get("/ready")
     assert live.status_code == ready.status_code == 200
     assert live.json()["version"] == ready.json()["version"] == APP_VERSION == "1.1.0"
-    assert ready.json()["checks"] == {"database": "ok", "checkpointer": "ok", "agent": "ok", "model": "configured", "worker": "ok"}
+    assert ready.json()["checks"] == {"database": "ok", "checkpointer": "ok", "agent": "ok", "model": "deployment_default", "worker": "ok"}
 
 
 def test_production_settings_reject_unsafe_defaults():
@@ -184,23 +185,86 @@ def test_production_registration_requires_a_strong_invite_code():
 
 def test_llm_placeholder_key_is_not_reported_as_configured():
     placeholder = Settings(_env_file=None, DEEPSEEK_API_KEY="replace-with-your-deepseek-api-key")
+    generic_placeholder = Settings(_env_file=None, LLM_API_KEY="replace-with-your-model-api-key")
     configured = Settings(_env_file=None, DEEPSEEK_API_KEY="test-non-placeholder-key")
     assert placeholder.llm_configured is False
+    assert generic_placeholder.llm_configured is False
     assert configured.llm_configured is True
 
 
-def test_production_requires_api_key_for_any_provider_label():
-    with pytest.raises(ValueError, match="LLM API key"):
-        Settings(
-            _env_file=None,
-            app_env="production",
-            APP_SECRET_KEY="a-secure-application-secret-with-32-characters",
-            admin_password="non-default-admin-password",
-            database_url="postgresql+psycopg://opsagent:secure@db/ops",
-            LLM_PROVIDER="openai-compatible",
-            DEEPSEEK_API_KEY="",
-            SSH_STRICT_HOST_KEY_CHECKING=True,
-        )
+def test_production_can_start_without_deployment_model_key_for_user_setup():
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        APP_SECRET_KEY="a-secure-application-secret-with-32-characters",
+        admin_password="non-default-admin-password",
+        database_url="postgresql+psycopg://opsagent:secure@db/ops",
+        LLM_API_KEY="",
+        SSH_STRICT_HOST_KEY_CHECKING=True,
+        REGISTRATION_ENABLED=False,
+    )
+    assert settings.llm_configured is False
+
+
+def test_user_can_store_encrypted_model_settings_and_reset_to_deployment_default(client: TestClient):
+    user = create_user()
+    headers = bearer(user)
+    initial = client.get("/api/llm-settings", headers=headers)
+    assert initial.status_code == 200
+    assert initial.json()["source"] == "deployment"
+    assert "api_key" not in initial.json()
+
+    secret = "sk-user-secret-that-must-not-be-returned"
+    saved = client.put(
+        "/api/llm-settings",
+        headers=headers,
+        json={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-test-model",
+            "api_key": secret,
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["source"] == "user"
+    assert saved.json()["api_key_source"] == "user"
+    assert secret not in saved.text
+    with SessionLocal() as db:
+        profile = db.scalar(select(UserLLMSettings).where(UserLLMSettings.user_id == user.id))
+        assert profile.api_key_encrypted != secret
+        assert secret not in profile.api_key_encrypted
+        assert decrypt_api_key(profile.api_key_encrypted) == secret
+        session = ChatSession(project_id=None, environment_id=None, user_id=user.id, title="model")
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        queued = create_run(db, session, user.id, "hello")
+        resolved = resolve_llm_configuration(db, queued["run_summary"]["id"])
+        assert resolved.provider == "openai"
+        assert resolved.model == "gpt-test-model"
+        assert resolved.api_key == secret
+
+    reset = client.delete("/api/llm-settings", headers=headers)
+    assert reset.status_code == 200
+    assert reset.json()["source"] == "deployment"
+    with SessionLocal() as db:
+        assert db.scalar(select(UserLLMSettings).where(UserLLMSettings.user_id == user.id)) is None
+
+
+def test_user_model_settings_reject_unapproved_base_url(client: TestClient):
+    user = create_user()
+    response = client.put(
+        "/api/llm-settings",
+        headers=bearer(user),
+        json={
+            "provider": "openai-compatible",
+            "base_url": "http://169.254.169.254/latest/meta-data",
+            "model": "unsafe",
+            "api_key": "not-a-real-secret",
+        },
+    )
+    assert response.status_code == 422
+    assert "LLM_ALLOWED_BASE_URLS" in response.text
 
 
 def test_environment_api_enforces_schema_and_single_default(client: TestClient):
