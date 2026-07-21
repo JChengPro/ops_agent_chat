@@ -206,6 +206,7 @@ def test_verified_change_is_not_planned_or_approved_twice_in_one_run():
 
             assert finished["run_summary"]["status"] == "completed"
             assert "已经执行并通过最终状态验证" in finished["assistant_message"]["content"]
+            db.expire_all()
             changes = list(
                 db.scalars(
                     select(Action).where(
