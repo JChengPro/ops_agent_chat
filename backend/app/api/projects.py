@@ -8,6 +8,7 @@ from sqlalchemy import case, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.audit.service import append_audit_event
 from app.api.deps import require_environment, require_environment_permission, require_project, require_project_permission
 from app.context.collectors.manual import collect_manual_services
 from app.context.jobs import collector_run_out, queue_environment_collectors
@@ -258,6 +259,10 @@ def create_environment(project_id: int, payload: EnvironmentPayload, db: Session
 def patch_environment(environment_id: int, payload: EnvironmentPatch, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     row = require_environment_permission(db, user, environment_id, "project.manage")
     project = db.get(Project, row.project_id)
+    monitoring_before = {
+        "monitoring_enabled": row.monitoring_enabled,
+        "auto_remediation_enabled": row.auto_remediation_enabled,
+    }
     if "connection_id" in payload.model_fields_set:
         validate_connection_scope(db, project, payload.connection_id)
     if payload.config_json is not None or payload.runtime_type is not None:
@@ -276,6 +281,20 @@ def patch_environment(environment_id: int, payload: EnvironmentPatch, db: Sessio
     if "monitoring_enabled" in payload.model_fields_set:
         row.next_monitor_at = datetime.now(timezone.utc) if payload.monitoring_enabled else None
     for key, value in payload.model_dump(exclude_unset=True).items(): setattr(row, key, value)
+    monitoring_after = {
+        "monitoring_enabled": row.monitoring_enabled,
+        "auto_remediation_enabled": row.auto_remediation_enabled,
+    }
+    if monitoring_before != monitoring_after:
+        append_audit_event(
+            db,
+            actor_type="user",
+            actor_id=str(user.id),
+            event_type="environment.monitoring_config_updated",
+            payload={"before": monitoring_before, "after": monitoring_after},
+            project_id=row.project_id,
+            environment_id=row.id,
+        )
     try:
         db.commit()
     except IntegrityError as exc:

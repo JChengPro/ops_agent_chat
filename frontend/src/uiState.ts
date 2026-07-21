@@ -1,4 +1,4 @@
-import type { Action, Approval, ChatMessage, Evidence, MonitorEvent } from "./api/types";
+import type { Action, Approval, ChatMessage, Environment, Evidence, MonitorEvent } from "./api/types";
 
 const POLLING_TERMINAL_STATES = new Set(["completed", "failed", "cancelled", "waiting_for_approval"]);
 
@@ -11,6 +11,38 @@ export function shouldApplySessionResult(currentSessionId: number | null, target
 }
 
 export type MonitorNotice = {kind: "success" | "error" | "info"; text: string};
+export type EnvironmentMonitoringStatus = {
+  tone: "enabled" | "warning" | "disabled";
+  label: string;
+  detail: string;
+};
+
+export function environmentMonitoringStatus(
+  environment: Pick<Environment, "monitoring_enabled" | "auto_remediation_enabled" | "last_monitored_at"> | null | undefined,
+): EnvironmentMonitoringStatus {
+  if (!environment) {
+    return {tone: "disabled", label: "巡检未配置", detail: "当前会话没有关联运行环境。"};
+  }
+  if (!environment.monitoring_enabled) {
+    return {
+      tone: "disabled",
+      label: environment.auto_remediation_enabled ? "巡检关 · 自动修复不生效" : "巡检关 · 自动修复关",
+      detail: "系统不会主动检查当前环境，低风险自动修复也不会运行。请在配置中开启。",
+    };
+  }
+  if (!environment.auto_remediation_enabled) {
+    return {
+      tone: "warning",
+      label: "巡检开 · 自动修复关",
+      detail: "系统会主动检查并告警，但不会自动执行低风险修复。",
+    };
+  }
+  return {
+    tone: "enabled",
+    label: "巡检开 · 自动修复开",
+    detail: "系统会主动检查当前环境，并按策略执行允许的低风险自动修复。",
+  };
+}
 
 export function monitorEventSnapshot(item: MonitorEvent): string {
   return [

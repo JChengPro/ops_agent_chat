@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { validateRegistration } from "../src/authState.ts";
-import { applyApprovalBatchResult, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../src/uiState.ts";
+import { applyApprovalBatchResult, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../src/uiState.ts";
 
 test("registration form validates identity, password and optional invite code", () => {
   const valid = {username: "new-user", email: "new@example.test", password: "secure-pass-123", passwordConfirmation: "secure-pass-123", inviteCode: "invite"};
@@ -20,6 +20,15 @@ test("run polling stops for approval and terminal states", () => {
   for (const status of ["completed", "failed", "cancelled", "waiting_for_approval"]) {
     assert.equal(isRunPollingTerminal(status), true);
   }
+});
+
+test("monitoring status makes disabled and remediation modes explicit", () => {
+  assert.deepEqual(environmentMonitoringStatus(null), {
+    tone: "disabled", label: "巡检未配置", detail: "当前会话没有关联运行环境。",
+  });
+  assert.equal(environmentMonitoringStatus({monitoring_enabled: false, auto_remediation_enabled: true}).label, "巡检关 · 自动修复不生效");
+  assert.equal(environmentMonitoringStatus({monitoring_enabled: true, auto_remediation_enabled: false}).tone, "warning");
+  assert.equal(environmentMonitoringStatus({monitoring_enabled: true, auto_remediation_enabled: true}).label, "巡检开 · 自动修复开");
 });
 
 test("optimistic approval update only changes the selected approval", () => {

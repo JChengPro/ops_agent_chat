@@ -58,8 +58,21 @@ def process_environment_monitor(
     project = db.get(Project, environment.project_id)
     if not project or not project.is_active:
         return []
+    runtime = executor or RuntimeExecutor(reuse_ssh_connections=True)
+    try:
+        return _process_environment_monitor(db, environment, project, runtime)
+    finally:
+        if executor is None:
+            runtime.close()
+
+
+def _process_environment_monitor(
+    db: Session,
+    environment: Environment,
+    project: Project,
+    runtime: RuntimeExecutor,
+) -> list[MonitorEvent]:
     run = _create_monitor_run(db, project, environment)
-    runtime = executor or RuntimeExecutor()
     _, observation = _execute_capability(
         db,
         run,

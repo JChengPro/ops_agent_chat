@@ -279,6 +279,52 @@ def test_missing_ssh_key_is_classified_and_stops_agent_retry(tmp_path):
     assert "force-recreate backend worker" in terminal[1]
 
 
+def test_ssh_transport_reuses_one_active_client_until_cycle_close(monkeypatch):
+    class ActiveTransport:
+        @staticmethod
+        def is_active():
+            return True
+
+    class Client:
+        def __init__(self):
+            self.connect_count = 0
+            self.close_count = 0
+
+        def connect(self, **kwargs):
+            del kwargs
+            self.connect_count += 1
+
+        @staticmethod
+        def get_transport():
+            return ActiveTransport()
+
+        def close(self):
+            self.close_count += 1
+
+    client = Client()
+    transport = SSHTransport(reuse_connections=True)
+    monkeypatch.setattr(transport, "_client", lambda connection: client)
+    monkeypatch.setattr(transport, "_verify_fingerprint", lambda current, connection: None)
+    connection = SimpleNamespace(
+        host="host.docker.internal",
+        port=22,
+        username="opsagent",
+        credential_ref="/run/secrets/project-key",
+        host_fingerprint="SHA256:test",
+    )
+
+    first, first_owned = transport._acquire_client(connection)
+    second, second_owned = transport._acquire_client(connection)
+
+    assert first is second is client
+    assert first_owned is False
+    assert second_owned is False
+    assert client.connect_count == 1
+    assert client.close_count == 0
+    transport.close()
+    assert client.close_count == 1
+
+
 def test_registered_file_write_failure_restores_original_backup(monkeypatch):
     renames: list[tuple[str, str]] = []
 

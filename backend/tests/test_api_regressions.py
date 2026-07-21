@@ -266,6 +266,31 @@ def test_environment_monitoring_controls_are_independent_and_disabled_by_default
     assert monitoring_stopped.status_code == 200
     assert monitoring_stopped.json()["monitoring_enabled"] is False
     assert monitoring_stopped.json()["auto_remediation_enabled"] is True
+    with SessionLocal() as db:
+        events = list(db.scalars(
+            select(AuditEvent)
+            .where(
+                AuditEvent.event_type == "environment.monitoring_config_updated",
+                AuditEvent.environment_id == environment["id"],
+            )
+            .order_by(AuditEvent.created_at, AuditEvent.id)
+        ))
+        assert len(events) == 2
+        enabled_event = next(item for item in events if item.payload_json["after"]["monitoring_enabled"] is True)
+        stopped_event = next(item for item in events if item.payload_json["after"]["monitoring_enabled"] is False)
+        assert enabled_event.actor_id == str(user.id)
+        assert enabled_event.payload_json["before"] == {
+            "monitoring_enabled": False,
+            "auto_remediation_enabled": False,
+        }
+        assert enabled_event.payload_json["after"] == {
+            "monitoring_enabled": True,
+            "auto_remediation_enabled": True,
+        }
+        assert stopped_event.payload_json["after"] == {
+            "monitoring_enabled": False,
+            "auto_remediation_enabled": True,
+        }
 
 
 def test_connection_reference_is_redacted_and_cannot_be_deleted_while_in_use(client: TestClient):

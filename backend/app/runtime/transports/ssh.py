@@ -30,6 +30,16 @@ class TransportResult:
 
 
 class SSHTransport:
+    def __init__(self, *, reuse_connections: bool = False) -> None:
+        self.reuse_connections = reuse_connections
+        self._shared_clients: dict[tuple[str, int, str, str, str], paramiko.SSHClient] = {}
+
+    def close(self) -> None:
+        clients = list(self._shared_clients.values())
+        self._shared_clients.clear()
+        for client in clients:
+            client.close()
+
     def test_connection(self, connection: Connection) -> tuple[bool, str]:
         credential_error = self._credential_error(connection)
         if credential_error:
@@ -60,10 +70,10 @@ class SSHTransport:
         if credential_error:
             error_code, message = credential_error
             return TransportResult("failed", None, "", message, 0, error_code=error_code)
-        client = self._client(connection)
+        client: paramiko.SSHClient | None = None
+        close_after_command = False
         try:
-            client.connect(**self._connect_kwargs(connection))
-            self._verify_fingerprint(client, connection)
+            client, close_after_command = self._acquire_client(connection)
             command = shlex.join(argv)
             if environment.workdir:
                 command = f"cd {shlex.quote(environment.workdir)} && {command}"
@@ -94,6 +104,8 @@ class SSHTransport:
                     break
                 if time.monotonic() >= deadline:
                     channel.close()
+                    if not close_after_command:
+                        self._discard_shared_client(connection, client)
                     out, _ = truncate_text(out_buffer.decode("utf-8", errors="replace"), 65536)
                     err, _ = truncate_text(err_buffer.decode("utf-8", errors="replace"), 16384)
                     return TransportResult(
@@ -120,6 +132,8 @@ class SSHTransport:
                 out_stream_truncated or err_stream_truncated or out_text_truncated or err_text_truncated,
             )
         except Exception as exc:  # noqa: BLE001
+            if client is not None and not close_after_command:
+                self._discard_shared_client(connection, client)
             error_code, message = self._connection_error(exc)
             return TransportResult(
                 "failed",
@@ -130,7 +144,8 @@ class SSHTransport:
                 error_code=error_code,
             )
         finally:
-            client.close()
+            if client is not None and close_after_command:
+                client.close()
 
     def read_file(
         self,
@@ -273,6 +288,45 @@ class SSHTransport:
         else:
             client.set_missing_host_key_policy(paramiko.RejectPolicy() if strict else paramiko.AutoAddPolicy())
         return client
+
+    def _acquire_client(self, connection: Connection) -> tuple[paramiko.SSHClient, bool]:
+        key = self._connection_key(connection)
+        if self.reuse_connections:
+            cached = self._shared_clients.get(key)
+            transport = cached.get_transport() if cached else None
+            if cached and transport and transport.is_active():
+                return cached, False
+            if cached:
+                cached.close()
+                self._shared_clients.pop(key, None)
+
+        client = self._client(connection)
+        try:
+            client.connect(**self._connect_kwargs(connection))
+            self._verify_fingerprint(client, connection)
+        except Exception:
+            client.close()
+            raise
+        if self.reuse_connections:
+            self._shared_clients[key] = client
+            return client, False
+        return client, True
+
+    @staticmethod
+    def _connection_key(connection: Connection) -> tuple[str, int, str, str, str]:
+        return (
+            str(connection.host or ""),
+            int(connection.port or 22),
+            str(connection.username or ""),
+            str(connection.credential_ref or ""),
+            str(connection.host_fingerprint or ""),
+        )
+
+    def _discard_shared_client(self, connection: Connection, client: paramiko.SSHClient) -> None:
+        key = self._connection_key(connection)
+        if self._shared_clients.get(key) is client:
+            self._shared_clients.pop(key, None)
+        client.close()
 
     def _connect_kwargs(self, connection: Connection) -> dict:
         kwargs = {

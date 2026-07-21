@@ -45,3 +45,6 @@ Thumbs.db
 *.swp
 *.swo
 
+
+# Local implementation plan
+IMPLEMENTATION_PLAN.md

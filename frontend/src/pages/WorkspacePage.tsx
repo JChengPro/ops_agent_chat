@@ -4,7 +4,7 @@ import { Activity, BadgeCheck, BookOpenText, ChevronRight, CircleAlert, CircleCh
 import { cancelCollectorRun, cancelRun, collectContext, createConnection, createEnvironment, createExperience, createProject, createSession, decideApprovalBatch, deleteConnection, deleteEnvironment, deleteExperience, deleteProject, deleteSession, getRun, listActions, listCollectorRuns, listConnections, listEntities, listEnvironments, listEvidence, listExperience, listGeneralRuns, listGeneralSessions, listMessages, listMonitorEvents, listProjects, listRuns, listSessions, listSteps, queueMessage, sendFeedback, testEnvironmentConnection, updateConnection, updateEnvironment, updateExperience, updateProject, updateSession } from "../api/ops";
 import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, Entity, Environment, Evidence, ExperienceItem, MonitorEvent, Project, User } from "../api/types";
 import { ProjectConfigDialog, type ProjectConfigurationValue } from "../components/ProjectConfigDialog";
-import { applyApprovalBatchResult, humanCapability, humanEvidenceSummary, isRunPollingTerminal, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../uiState";
+import { applyApprovalBatchResult, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../uiState";
 
 type Tab = "activity" | "experience" | "config";
 type Menu = {type:"project"|"session";id:number;x:number;y:number}|null;
@@ -28,6 +28,8 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
   const menuProject=useMemo(()=>menu?.type==="project"?projects.find(item=>item.id===menu.id)||null:null,[menu,projects]);
   const menuSession=useMemo(()=>menu?.type==="session"?sessions.find(item=>item.id===menu.id)||null:null,[menu,sessions]);
   const activeEnvironment=useMemo(()=>environments.find(item=>item.id===session?.environment_id)||environments.find(item=>item.is_default)||environments[0]||null,[environments,session]);
+  const monitoringStatus=useMemo(()=>environmentMonitoringStatus(activeEnvironment),[activeEnvironment]);
+  const visibleRuns=useMemo(()=>runs.filter(run=>run.request_json?.source!=="terminal"),[runs]);
 
   useEffect(()=>{void refreshProjects();},[]);
   useEffect(()=>{
@@ -70,6 +72,33 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
   },[projectId,projectsReady]);
   useEffect(()=>{if(!sessionId)return;let disposed=false;Promise.all([listMessages(sessionId),projectId===null?listGeneralRuns(sessionId):listRuns(projectId,sessionId)]).then(([m,r])=>{if(!disposed){setMessages(m);setRuns(r);}}).catch(error=>{if(!disposed)showNotice("error",error instanceof Error?error.message:"聊天记录加载失败");});return()=>{disposed=true;};},[sessionId,projectId]);
   useEffect(()=>{currentSessionRef.current=sessionId;},[sessionId]);
+  useEffect(()=>{
+    if(!sessionId)return;
+    const targetSessionId=sessionId,targetProjectId=projectId;
+    let disposed=false,timer:number|undefined,requesting=false;
+    async function refreshActivity(){
+      if(disposed||document.hidden||requesting)return;
+      requesting=true;
+      try{
+        const latest=targetProjectId===null?await listGeneralRuns(targetSessionId):await listRuns(targetProjectId,targetSessionId);
+        if(!disposed&&shouldApplySessionResult(currentSessionRef.current,targetSessionId))setRuns(latest);
+      }catch{
+        // The next interval retries; avoid repeated global notices for a background refresh.
+      }finally{
+        requesting=false;
+        if(!disposed&&!document.hidden)timer=window.setTimeout(refreshActivity,3000);
+      }
+    }
+    function handleVisibility(){
+      if(document.hidden){if(timer)window.clearTimeout(timer);timer=undefined;return;}
+      if(timer)window.clearTimeout(timer);
+      timer=undefined;
+      void refreshActivity();
+    }
+    document.addEventListener("visibilitychange",handleVisibility);
+    void refreshActivity();
+    return()=>{disposed=true;if(timer)window.clearTimeout(timer);document.removeEventListener("visibilitychange",handleVisibility);};
+  },[sessionId,projectId]);
   useEffect(()=>{endRef.current?.scrollIntoView({behavior:"smooth",block:"end"});},[messages,sending]);
   useEffect(()=>{if(!notice)return;const timer=window.setTimeout(()=>setNotice(current=>current===notice?null:current),7000);return()=>window.clearTimeout(timer);},[notice]);
   useEffect(()=>{if(!menu)return;const close=()=>setMenu(null);window.addEventListener("resize",close);document.addEventListener("scroll",close,true);return()=>{window.removeEventListener("resize",close);document.removeEventListener("scroll",close,true);};},[menu]);
@@ -142,14 +171,14 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
       </div></section>
       <button className="logout" onClick={onLogout}><UserCircle size={25}/><span>{user.username}</span><LogOut size={17}/></button>
     </aside>
-    <section className="glass-panel chat-pane"><header className="chat-header"><div><strong>{project?.name??"通用聊天"}</strong><span>{session?.title??"新会话"}</span></div><div className="chat-header-actions">{project&&activeEnvironment&&<select className="environment-select" value={activeEnvironment.id} onChange={event=>void selectEnvironment(Number(event.target.value))} title="当前运行环境">{environments.map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select>}<button className={`outline-toggle ${navOpen?"active":""}`} onClick={()=>setNavOpen(x=>!x)} title="消息导航"><MessageSquare size={17}/></button><span className="mode-badge">受控运维</span></div></header>
+    <section className="glass-panel chat-pane"><header className="chat-header"><div><strong>{project?.name??"通用聊天"}</strong><span>{session?.title??"新会话"}</span></div><div className="chat-header-actions">{project&&activeEnvironment&&<><select className="environment-select" value={activeEnvironment.id} onChange={event=>void selectEnvironment(Number(event.target.value))} title="当前运行环境">{environments.map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select><button type="button" className={`monitoring-status-chip ${monitoringStatus.tone}`} title={`${monitoringStatus.detail} 点击打开配置。`} onClick={()=>configureEnvironment(activeEnvironment)}><Activity size={14}/><span>{monitoringStatus.label}</span></button></>}<button className={`outline-toggle ${navOpen?"active":""}`} onClick={()=>setNavOpen(x=>!x)} title="消息导航"><MessageSquare size={17}/></button><span className="mode-badge">受控运维</span></div></header>
       <MessageNav open={navOpen} messages={messages} jump={id=>messageRefs.current[id]?.scrollIntoView({behavior:"smooth",block:"center"})}/>
       <div className="message-list">{messages.length===0&&!sending&&<div className="empty-chat"><div className="empty-mark">&gt;_</div><h2>我能帮你处理什么？</h2><p>可以问通用问题，也可以调查当前项目或提出受控变更。</p></div>}
         {messages.map(m=><MessageView key={m.id} message={m} setRef={el=>{messageRefs.current[m.id]=el;}} onApproval={approve} approvalBusy={approvalBusy}/>) }{sending&&<div className="message assistant"><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="typing-line"><span/><span/><span/></div></div></div>}<div ref={endRef}/></div>
       <form className="composer" onSubmit={submit}><input ref={composerRef} value={input} onChange={e=>setInput(e.target.value)} placeholder="输入问题或描述要完成的任务" disabled={sending}/>{activeRunId?<button type="button" className="stop-run" onClick={stopRun} disabled={cancelling}><StopCircle size={18}/>{cancelling?"停止中":"停止"}</button>:<button disabled={sending}><Send size={18}/>发送</button>}</form>
     </section>
     <aside className="glass-panel right-pane"><div className="right-pane-head"><div className="tabs"><button className={tab==="activity"?"active":""} onClick={()=>setTab("activity")}><Activity size={16}/>活动</button><button className={tab==="experience"?"active":""} onClick={()=>setTab("experience")}><BookOpenText size={16}/>经验</button><button className={tab==="config"?"active":""} onClick={()=>setTab("config")}><Settings size={16}/>配置</button></div></div>
-      {tab==="activity"&&<ActivityPanel runs={runs} monitorEvents={monitorEvents} onUseRecommendation={useMonitorRecommendation}/>}
+      {tab==="activity"&&<ActivityPanel runs={visibleRuns} monitorEvents={monitorEvents} onUseRecommendation={useMonitorRecommendation}/>}
       {tab==="experience"&&(projectId?<ExperiencePanel items={experience} projectId={projectId} onChange={setExperience} onRequestDelete={(item,onDelete)=>requestConfirm("删除项目经验",`经验“${item.title}”将被删除。`,"删除经验",onDelete)}/>:<div className="side-card"><p className="empty-note">通用聊天不使用项目经验。</p></div>)}
       {tab==="config"&&<ConfigPanel
         project={project}
@@ -224,25 +253,56 @@ function MessageNav({open,messages,jump}:{open:boolean;messages:ChatMessage[];ju
 function ActivityPanel({runs,monitorEvents,onUseRecommendation}:{runs:AgentRun[];monitorEvents:MonitorEvent[];onUseRecommendation:(item:MonitorEvent)=>void}){
   const [selected,setSelected]=useState<string|null>(null), [steps,setSteps]=useState<AgentStep[]>([]), [actions,setActions]=useState<Action[]>([]), [evidence,setEvidence]=useState<Evidence[]>([]);
   const [loading,setLoading]=useState(false), [loadError,setLoadError]=useState("");
-  const requestSequence=useRef(0);
-  async function expand(id:string){
-    const sequence=++requestSequence.current;
+  const requestSequence=useRef(0),detailLoaded=useRef(false);
+  const monitorCrowded=monitorEvents.length>5;
+  const selectedRunStatus=runs.find(run=>run.id===selected)?.status||"";
+  function expand(id:string){
+    requestSequence.current+=1;
     if(selected===id){setSelected(null);return;}
+    detailLoaded.current=false;
     setSelected(id);setSteps([]);setActions([]);setEvidence([]);setLoadError("");setLoading(true);
-    try{const [s,a,e]=await Promise.all([listSteps(id),listActions(id),listEvidence(id)]);if(requestSequence.current===sequence){setSteps(s);setActions(a);setEvidence(e);}}
-    catch(error){if(requestSequence.current===sequence)setLoadError(error instanceof Error?error.message:"活动详情加载失败");}
-    finally{if(requestSequence.current===sequence)setLoading(false);}
   }
+  useEffect(()=>{
+    if(!selected)return;
+    const runId=selected,isTerminal=["completed","failed","cancelled"].includes(selectedRunStatus);
+    let disposed=false,timer:number|undefined,requesting=false;
+    async function refreshDetail(){
+      if(disposed||document.hidden||requesting)return;
+      requesting=true;
+      const sequence=++requestSequence.current;
+      try{
+        const [nextSteps,nextActions,nextEvidence]=await Promise.all([listSteps(runId),listActions(runId),listEvidence(runId)]);
+        if(!disposed&&requestSequence.current===sequence){setSteps(nextSteps);setActions(nextActions);setEvidence(nextEvidence);setLoadError("");detailLoaded.current=true;}
+      }catch(error){
+        if(!disposed&&requestSequence.current===sequence&&!detailLoaded.current)setLoadError(error instanceof Error?error.message:"活动详情加载失败");
+      }finally{
+        requesting=false;
+        if(!disposed&&requestSequence.current===sequence)setLoading(false);
+        if(!disposed&&!document.hidden&&!isTerminal)timer=window.setTimeout(refreshDetail,2000);
+      }
+    }
+    function handleVisibility(){
+      if(document.hidden){if(timer)window.clearTimeout(timer);timer=undefined;return;}
+      if(timer)window.clearTimeout(timer);
+      timer=undefined;
+      void refreshDetail();
+    }
+    document.addEventListener("visibilitychange",handleVisibility);
+    void refreshDetail();
+    return()=>{disposed=true;requestSequence.current+=1;if(timer)window.clearTimeout(timer);document.removeEventListener("visibilitychange",handleVisibility);};
+  },[selected,selectedRunStatus]);
   return <div className="side-card activity-panel">
-    <section className="activity-section monitor-event-list" aria-label="主动巡检事件">
+    <section className={`activity-section monitor-event-list ${monitorCrowded?"crowded":"compact"}`} aria-label="主动巡检事件">
       <div className="activity-section-title"><h3>主动巡检</h3><span>{monitorEvents.length} 条</span></div>
-      {monitorEvents.length===0&&<p className="empty-note">当前环境暂无巡检事件。</p>}
-      {monitorEvents.slice(0,8).map(item=><div className={`monitor-event ${item.status} ${item.severity}`} key={item.id}><StatusDot status={item.status}/><span><strong>{item.summary}</strong><small>{monitorSeverityLabel(item.severity)} · {monitorStatusLabel(item.status)} · {new Date(item.last_seen_at).toLocaleString()}{item.occurrence_count>1?` · ${item.occurrence_count} 次`:""}</small>{item.diagnostic_run_id&&!item.diagnosis_summary&&<small className="monitor-diagnosis-state">{diagnosisStatusLabel(item.diagnostic_run_status)}</small>}{item.diagnosis_summary&&<details className="monitor-diagnosis"><summary>查看只读诊断与建议</summary><RichText text={item.diagnosis_summary}/><button type="button" onClick={()=>onUseRecommendation(item)}>在聊天中生成修复方案</button></details>}</span></div>)}
+      <div className="monitor-event-scroll">{monitorEvents.length===0&&<p className="empty-note">当前环境暂无巡检事件。</p>}
+        {monitorEvents.map(item=><div className={`monitor-event ${item.status} ${item.severity}`} key={item.id}><StatusDot status={item.status}/><span><strong>{item.summary}</strong><small>{monitorSeverityLabel(item.severity)} · {monitorStatusLabel(item.status)} · {new Date(item.last_seen_at).toLocaleString()}{item.occurrence_count>1?` · ${item.occurrence_count} 次`:""}</small>{item.diagnostic_run_id&&!item.diagnosis_summary&&<small className="monitor-diagnosis-state">{diagnosisStatusLabel(item.diagnostic_run_status)}</small>}{item.diagnosis_summary&&<details className="monitor-diagnosis"><summary>查看只读诊断与建议</summary><RichText text={item.diagnosis_summary}/><button type="button" onClick={()=>onUseRecommendation(item)}>在聊天中生成修复方案</button></details>}</span></div>)}
+      </div>
     </section>
     <section className="activity-section conversation-activity" aria-label="对话 Agent 活动">
       <div className="activity-section-title"><h3>对话 Agent 活动</h3><span>{runs.length} 条</span></div>
-      {runs.length===0&&<p className="empty-note">当前对话暂无 Agent 活动。</p>}
-      {runs.map(run=><div className={`activity-row ${selected===run.id?"expanded":""}`} key={run.id}><button onClick={()=>expand(run.id)} aria-expanded={selected===run.id}><StatusDot status={run.status}/><span><strong>{goalOf(run)}</strong><small>{runStepLabel(run.current_step||run.status)} · {run.step_count} 步</small></span><ChevronRight className="activity-chevron" size={16}/></button>{selected===run.id&&<div className="activity-detail">{loading&&<p className="activity-note">正在加载活动详情...</p>}{loadError&&<p className="activity-error">{loadError}</p>}{!loading&&!loadError&&<>{run.status==="failed"&&<p className="activity-error">运行失败：{runErrorLabel(run.error_code)}</p>}<div className="step-list">{steps.map(step=><p key={step.id}><b>{step.sequence}. {stepLabel(step.step_type)}</b><span className={step.status}>{stepStatusLabel(step.status)}</span></p>)}</div>{actions.map(a=><p key={a.id}><code>{humanCapability(a.capability_name)||a.capability_name}</code><span>{actionStatusLabel(a.status)}</span></p>)}{evidence.map(e=><details key={e.id} className="evidence-detail"><summary><b>{humanEvidenceSummary(e)}</b><small>{new Date(e.observed_at).toLocaleTimeString()}</small></summary><pre>{JSON.stringify(e.data_json,null,2)}</pre><em>{e.fresh_until?`有效至 ${new Date(e.fresh_until).toLocaleTimeString()}`:"静态上下文"}</em></details>)}{actions.length===0&&evidence.length===0&&<p className="activity-note">本次请求未产生工具调用或运行证据。</p>}</>}</div>}</div>)}
+      <div className="conversation-activity-scroll">{runs.length===0&&<p className="empty-note">当前对话暂无 Agent 活动。</p>}
+        {runs.map(run=><div className={`activity-row ${selected===run.id?"expanded":""}`} key={run.id}><button onClick={()=>expand(run.id)} aria-expanded={selected===run.id}><StatusDot status={run.status}/><span><strong>{goalOf(run)}</strong><small>{runStepLabel(run.current_step||run.status)} · {run.step_count} 步</small></span><ChevronRight className="activity-chevron" size={16}/></button>{selected===run.id&&<div className="activity-detail">{loading&&<p className="activity-note">正在加载活动详情...</p>}{loadError&&<p className="activity-error">{loadError}</p>}{!loading&&!loadError&&<>{run.status==="failed"&&<p className="activity-error">运行失败：{runErrorLabel(run.error_code)}</p>}<div className="step-list">{steps.map(step=><p key={step.id}><b>{step.sequence}. {stepLabel(step.step_type)}</b><span className={step.status}>{stepStatusLabel(step.status)}</span></p>)}</div>{actions.map(a=><p key={a.id}><code>{humanCapability(a.capability_name)||a.capability_name}</code><span>{actionStatusLabel(a.status)}</span></p>)}{evidence.map(e=><details key={e.id} className="evidence-detail"><summary><b>{humanEvidenceSummary(e)}</b><small>{new Date(e.observed_at).toLocaleTimeString()}</small></summary><pre>{JSON.stringify(e.data_json,null,2)}</pre><em>{e.fresh_until?`有效至 ${new Date(e.fresh_until).toLocaleTimeString()}`:"静态上下文"}</em></details>)}{actions.length===0&&evidence.length===0&&<p className="activity-note">本次请求未产生工具调用或运行证据。</p>}</>}</div>}</div>)}
+      </div>
     </section>
   </div>;
 }

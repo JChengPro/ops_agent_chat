@@ -21,9 +21,16 @@ from app.runtime.adapters.http import HttpAdapter
 from app.runtime.adapters.kubernetes import KubernetesAdapter
 from app.runtime.adapters.registered import RegisteredConfigAdapter, RegisteredDeploymentAdapter, rollback_deployment
 from app.runtime.adapters.systemd import SystemdAdapter
+from app.runtime.transports.ssh import SSHTransport
 
 
 class RuntimeExecutor:
+    def __init__(self, *, reuse_ssh_connections: bool = False, transport: SSHTransport | None = None) -> None:
+        self.transport = transport or SSHTransport(reuse_connections=reuse_ssh_connections)
+
+    def close(self) -> None:
+        self.transport.close()
+
     def execute(self, db, action: Action, capability: CapabilityDefinition, *, ignore_cancellation: bool = False) -> dict:
         bound_capability = registry.get_bound(
             action.capability_name,
@@ -95,17 +102,17 @@ class RuntimeExecutor:
             )
             return self._record(db, action, "runtime", result)
         if capability.executor == "registered_deployment":
-            adapter = RegisteredDeploymentAdapter(cancel_check=cancel_check)
+            adapter = RegisteredDeploymentAdapter(transport=self.transport, cancel_check=cancel_check)
         elif capability.executor == "registered_config":
-            adapter = RegisteredConfigAdapter(cancel_check=cancel_check)
+            adapter = RegisteredConfigAdapter(transport=self.transport, cancel_check=cancel_check)
         elif capability.name.startswith("host."):
-            adapter = HostAdapter(cancel_check=cancel_check)
+            adapter = HostAdapter(transport=self.transport, cancel_check=cancel_check)
         elif runtime_environment.runtime_type == "docker_compose":
-            adapter = DockerComposeAdapter(cancel_check=cancel_check)
+            adapter = DockerComposeAdapter(transport=self.transport, cancel_check=cancel_check)
         elif runtime_environment.runtime_type == "kubernetes":
-            adapter = KubernetesAdapter(cancel_check=cancel_check)
+            adapter = KubernetesAdapter(transport=self.transport, cancel_check=cancel_check)
         elif runtime_environment.runtime_type == "systemd":
-            adapter = SystemdAdapter(cancel_check=cancel_check)
+            adapter = SystemdAdapter(transport=self.transport, cancel_check=cancel_check)
         else:
             result = AdapterResult("failed", "Runtime adapter is not available", {}, error=runtime_environment.runtime_type)
             return self._record(db, action, "runtime", result)
@@ -170,7 +177,7 @@ class RuntimeExecutor:
             if not self._renew_execution_marker(db, action):
                 return {"status": "execution_unknown", "summary": "Configuration recovery was not started after lease loss"}
             action = db.get(Action, action.id)
-            result = RegisteredConfigAdapter().rollback(connection, runtime_environment, resolved)
+            result = RegisteredConfigAdapter(transport=self.transport).rollback(connection, runtime_environment, resolved)
             if not self._execution_owned(db, action):
                 db.rollback()
                 return {"status": "execution_unknown", "summary": "Late configuration recovery result was ignored after lease loss"}
@@ -181,7 +188,7 @@ class RuntimeExecutor:
             if not self._renew_execution_marker(db, action):
                 return {"status": "execution_unknown", "summary": "Deployment recovery was not started after lease loss"}
             action = db.get(Action, action.id)
-            adapter = RegisteredDeploymentAdapter()
+            adapter = RegisteredDeploymentAdapter(transport=self.transport)
             result = rollback_deployment(adapter, connection, runtime_environment, resolved)
             if not self._execution_owned(db, action):
                 db.rollback()
@@ -314,7 +321,7 @@ class RuntimeExecutor:
             runtime_type=resolved.get("runtime_type", environment.runtime_type), workdir=resolved.get("workdir", environment.workdir),
             namespace=resolved.get("namespace", environment.namespace), config_json={"compose_file": resolved.get("compose_file", "docker-compose.yml")},
         )
-        RegisteredConfigAdapter().finalize(connection, runtime_environment, resolved)
+        RegisteredConfigAdapter(transport=self.transport).finalize(connection, runtime_environment, resolved)
 
     @staticmethod
     def _resolved_connection(db, environment: Environment, resolved: dict):
