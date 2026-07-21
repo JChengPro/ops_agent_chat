@@ -119,6 +119,112 @@ def test_direct_answer_and_read_investigation_and_approval_resume():
             assert executor.calls == calls_before_retry
 
 
+def test_verified_change_is_not_planned_or_approved_twice_in_one_run():
+    user_id, session_id = setup_subject()
+    stop_call = {
+        "decision": "propose_change",
+        "request": req("change", "runtime", "change", "current"),
+        "tool_calls": [
+            {
+                "capability": "service.stop",
+                "arguments": {"service": "backend"},
+                "purpose": "stop backend",
+            }
+        ],
+        "answer": None,
+        "clarification_question": None,
+    }
+
+    class StopExecutor(FakeExecutor):
+        def __init__(self):
+            super().__init__()
+            self.status_calls = 0
+
+        def execute(self, db, action, capability):
+            self.calls += 1
+            assert action.execution_token
+            if capability.name == "service.status":
+                self.status_calls += 1
+                state = "exited" if self.status_calls >= 3 else "running"
+                data = {"stdout": f'{{"State":"{state}"}}\n'}
+            else:
+                data = {"state": "stopped"}
+            evidence = record_result(
+                db,
+                action,
+                "fake",
+                AdapterResult("success", f"Observed {capability.name}", data),
+            )
+            db.flush()
+            return {
+                "evidence_id": evidence.id,
+                "capability": capability.name,
+                "status": "success",
+                "summary": evidence.summary,
+                "data": evidence.data_json,
+                "observed_at": evidence.observed_at.isoformat(),
+                "fresh_until": evidence.fresh_until.isoformat() if evidence.fresh_until else None,
+            }
+
+    with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
+        saver.setup()
+        executor = StopExecutor()
+        graph = OpsAgentGraph(
+            checkpointer=saver,
+            gateway=LLMGateway(FakeDecisionProvider([stop_call, stop_call])),
+            executor=executor,
+        )
+        with SessionLocal() as db:
+            session = db.get(ChatSession, session_id)
+            queued = create_run(db, session, user_id, "帮我停掉 backend")
+            waiting = process_claimed_run(
+                db,
+                graph,
+                claim_run(db, "test-worker", queued["run_summary"]["id"]),
+                "test-worker",
+            )
+            run_id = waiting["run_summary"]["id"]
+            approval = db.scalar(
+                select(Approval).join(Action).where(Action.run_id == run_id)
+            )
+            owner = db.get(User, user_id)
+            decide_approval(
+                approval.id,
+                ApprovalDecision(action_hash=approval.action_hash),
+                "approved",
+                db,
+                owner,
+            )
+
+            run = db.get(AgentRun, run_id)
+            finished = process_claimed_run(
+                db,
+                graph,
+                claim_run(db, "test-worker", run.id),
+                "test-worker",
+            )
+
+            assert finished["run_summary"]["status"] == "completed"
+            assert "已经执行并通过最终状态验证" in finished["assistant_message"]["content"]
+            changes = list(
+                db.scalars(
+                    select(Action).where(
+                        Action.run_id == run_id,
+                        Action.capability_name == "service.stop",
+                    )
+                )
+            )
+            approvals = list(
+                db.scalars(select(Approval).join(Action).where(Action.run_id == run_id))
+            )
+            assert len(changes) == 1
+            assert changes[0].status == "verified"
+            assert len(approvals) == 1
+            assert approvals[0].decision == "approved"
+            assert approvals[0].consumed_at is not None
+            assert executor.calls == 4
+
+
 def test_non_retryable_runtime_configuration_error_stops_after_one_tool_call():
     user_id, session_id = setup_subject()
     decisions = [

@@ -368,6 +368,7 @@ class OpsAgentGraph:
         settings = get_settings()
         action_ids: list[str] = []
         observations: list[dict] = []
+        verified_duplicates: list[Action] = []
         requires_approval = False
         precheck_calls = 0
         seen_calls: set[str] = set()
@@ -413,6 +414,28 @@ class OpsAgentGraph:
                     observations.append({"capability": definition.name, "status": "denied", "summary": str(exc)})
                     continue
                 target = {"name": arguments.get("service") or arguments.get("entity") or arguments.get("endpoint") or arguments.get("deployment") or arguments.get("change")}
+                if definition.effect == "change":
+                    duplicate = self._verified_duplicate_change(
+                        db,
+                        state,
+                        definition,
+                        arguments,
+                        target,
+                        resolved_spec,
+                    )
+                    if duplicate:
+                        verified_duplicates.append(duplicate)
+                        observations.append({
+                            "action_id": duplicate.id,
+                            "capability": definition.name,
+                            "status": "success",
+                            "summary": (
+                                f"{target.get('name') or '目标'} 的相同变更已在本次任务中执行并验证通过，"
+                                "不会重复执行或再次创建审批。"
+                            ),
+                            "duplicate_of": duplicate.id,
+                        })
+                        continue
                 action = Action(
                     id=action_id,
                     run_id=state["run_id"],
@@ -549,7 +572,27 @@ class OpsAgentGraph:
                 }
             self._step(db, state, "policy", {"actions": action_ids, "requires_approval": requires_approval})
             db.commit()
-        return {"action_ids": action_ids, "evidence": state.get("evidence", []) + observations, "tool_call_count": state.get("tool_call_count", 0) + precheck_calls, "status": "waiting_for_approval" if requires_approval else "running"}
+        result = {
+            "action_ids": action_ids,
+            "evidence": state.get("evidence", []) + observations,
+            "tool_call_count": state.get("tool_call_count", 0) + precheck_calls,
+            "status": "waiting_for_approval" if requires_approval else "running",
+        }
+        if (
+            verified_duplicates
+            and not action_ids
+            and len(verified_duplicates) == len(state.get("pending_calls", []))
+        ):
+            targets = ", ".join(
+                str(item.target_json.get("name") or item.capability_name)
+                for item in verified_duplicates
+            )
+            result.update({
+                "status": "completed",
+                "answer": f"{targets} 的请求变更已经执行并通过最终状态验证，没有重复执行。",
+                "pending_calls": [],
+            })
+        return result
 
     def await_approval(self, state: AgentState) -> dict:
         with SessionLocal() as db:
@@ -864,6 +907,8 @@ class OpsAgentGraph:
 
     @staticmethod
     def route_prepared(state: AgentState) -> str:
+        if state.get("status") in {"failed", "cancelled", "completed"}:
+            return "finish"
         if state.get("status") == "waiting_for_approval":
             return "approval"
         if any(action for action in state.get("action_ids", [])):
@@ -930,6 +975,31 @@ class OpsAgentGraph:
     @staticmethod
     def _runtime_records(data: dict) -> list[dict]:
         return runtime_records(data)
+
+    @staticmethod
+    def _verified_duplicate_change(db, state: AgentState, definition, arguments: dict, target: dict, resolved_spec: dict) -> Action | None:
+        candidates = db.scalars(
+            select(Action)
+            .where(
+                Action.run_id == state["run_id"],
+                Action.effect == "change",
+                Action.status == "verified",
+                Action.capability_name == definition.name,
+                Action.capability_version == definition.version,
+                Action.capability_definition_hash == registry.definition_hash(definition.name, definition.version),
+                Action.environment_id == state.get("environment_id"),
+                Action.config_revision == resolved_spec["configuration_revision"],
+            )
+            .order_by(Action.created_at.desc())
+        )
+        return next(
+            (
+                item
+                for item in candidates
+                if item.arguments_json == arguments and item.target_json == target
+            ),
+            None,
+        )
 
     def _run_precheck(self, db, state: AgentState, change_action: Action, change_definition) -> dict:
         precheck_name = change_definition.precheck
