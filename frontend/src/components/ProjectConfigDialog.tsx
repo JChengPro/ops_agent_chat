@@ -24,6 +24,7 @@ export function ProjectConfigDialog({
   onSave: (value: ProjectConfigurationValue) => Promise<void>;
 }) {
   const firstInput = useRef<HTMLInputElement | null>(null);
+  const connectionNameEdited = useRef(Boolean(connection));
   const [projectName, setProjectName] = useState(project?.name || "");
   const [description, setDescription] = useState(project?.description || "");
   const [environmentName, setEnvironmentName] = useState(environment?.name || "default");
@@ -64,6 +65,11 @@ export function ProjectConfigDialog({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, []);
+
+  useEffect(() => {
+    if (connectionNameEdited.current) return;
+    setConnectionName(`${slug(projectName || "project")}-server`);
+  }, [projectName]);
 
   const existingConfig = useMemo(() => ({ ...(environment?.config_json || {}) }), [environment]);
 
@@ -142,7 +148,7 @@ export function ProjectConfigDialog({
               <legend>SSH 连接</legend>
               <SSHSetupGuide name={connectionName} host={host} port={port} username={username} credentialRef={credentialRef}/>
               <div className="form-three-columns">
-                <label><FieldLabel text="连接名称" required help="当前项目内用于识别服务器的名称，例如 videohub-local。"/><input value={connectionName} onChange={event => setConnectionName(event.target.value)} maxLength={120} required/></label>
+                <label><FieldLabel text="连接名称" required help="当前项目内用于识别服务器的名称，例如 videohub-local。"/><input value={connectionName} onChange={event => { connectionNameEdited.current = true; setConnectionName(event.target.value); }} maxLength={120} required/></label>
                 <label><FieldLabel text="主机" required help="Backend 和 Worker 容器可访问的 SSH 地址。当前 WSL 宿主通常填写 host.docker.internal。"/><input value={host} onChange={event => setHost(event.target.value)} placeholder="10.0.0.12" required/></label>
                 <label><FieldLabel text="端口" required help="目标服务器 SSH 端口，通常为 22。"/><input type="number" min="1" max="65535" value={port} onChange={event => setPort(event.target.value)} required/></label>
                 <label><FieldLabel text="用户名" required help="目标服务器上已有的低权限账号，例如 opsagent。系统不会自动创建该用户。"/><input value={username} onChange={event => setUsername(event.target.value)} placeholder="opsagent" required/></label>
