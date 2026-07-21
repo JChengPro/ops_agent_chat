@@ -185,6 +185,7 @@ def test_production_registration_requires_a_strong_invite_code():
 
 def test_llm_placeholder_key_is_not_reported_as_configured(monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     placeholder = Settings(_env_file=None, DEEPSEEK_API_KEY="replace-with-your-deepseek-api-key")
     generic_placeholder = Settings(_env_file=None, LLM_API_KEY="replace-with-your-model-api-key")
     configured = Settings(_env_file=None, DEEPSEEK_API_KEY="test-non-placeholder-key")
