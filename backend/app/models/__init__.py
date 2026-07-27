@@ -7,12 +7,12 @@ from app.models.experience import ExperienceChunk, ExperienceItem
 from app.models.governance import AgentWorker, AuditEvent, LoginThrottle, MessageFeedback
 from app.models.monitoring import MonitorEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
-from app.models.user import User, UserLLMSettings
+from app.models.user import User, UserLLMSettings, UserSession
 
 __all__ = [
     "Action", "AgentRun", "AgentStep", "AgentWorker", "Approval", "AuditEvent", "CapabilityVersion",
     "ChatMessage", "ChatSession", "CollectorRun", "Connection", "ContextSource",
     "Environment", "EvidenceClaim", "EvidenceClaimLink", "ExperienceChunk", "ExperienceItem",
     "LoginThrottle", "MessageFeedback", "ModelCall", "MonitorEvent", "PolicyDecision", "Project", "ProjectEntity", "ProjectMember",
-    "ProjectRelationship", "RuntimeEvidence", "ToolInvocation", "User", "UserLLMSettings",
+    "ProjectRelationship", "RuntimeEvidence", "ToolInvocation", "User", "UserLLMSettings", "UserSession",
 ]

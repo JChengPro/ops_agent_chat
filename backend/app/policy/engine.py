@@ -128,13 +128,17 @@ class PolicyEngine:
         return PolicyResult("deny", risk, code, reason, [code])
 
 
+FULL_PROJECT_PERMISSIONS = {
+    "project.read",
+    "project.manage",
+    "runtime.read",
+    "runtime.change",
+    "approval.decide",
+}
+
+
 def permissions_for_role(role: str | None) -> set[str]:
-    if role == "owner":
-        return {"project.read", "project.manage", "runtime.read", "runtime.change", "approval.decide"}
-    if role == "approver":
-        return {"project.read", "runtime.read", "approval.decide"}
-    if role == "operator":
-        return {"project.read", "runtime.read", "runtime.change"}
-    if role == "viewer":
-        return {"project.read", "runtime.read"}
-    return set()
+    # Fine-grained permission management is intentionally deferred. Project
+    # membership remains the access boundary, but every member has the same
+    # complete project permission set during this phase.
+    return set(FULL_PROJECT_PERMISSIONS) if role else set()

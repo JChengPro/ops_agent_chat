@@ -2029,6 +2029,7 @@ code {
 
 .project-config-dialog,
 .model-settings-dialog,
+.account-settings-dialog,
 .small-dialog {
   width: min(980px, calc(100vw - 40px));
   max-height: min(860px, calc(100vh - 48px));
@@ -2042,6 +2043,35 @@ code {
   color: var(--text);
 }
 .model-settings-dialog { width: min(560px, calc(100vw - 32px)); }
+.account-settings-dialog { width: min(760px, calc(100vw - 32px)); }
+.account-settings-layout { min-height: 460px; display: grid; grid-template-columns: 190px minmax(0,1fr); }
+.account-settings-layout > nav { display: grid; align-content: start; gap: 4px; padding: 16px 12px; border-right: 1px solid var(--border); background: var(--surface-muted); }
+.account-settings-layout > nav button { min-height: 40px; display: flex; align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 0 11px; background: transparent; color: var(--muted); text-align: left; }
+.account-settings-layout > nav button:hover, .account-settings-layout > nav button.active { background: var(--surface); color: var(--text-strong); }
+.account-settings-content { min-width: 0; padding: 24px; overflow: auto; }
+.account-form { display: grid; gap: 15px; }
+.account-form > div:first-child h3, .session-settings-heading h3 { margin: 0; color: var(--text-strong); font-size: 16px; font-weight: 500; }
+.account-form > div:first-child p, .session-settings-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.account-form label { display: grid; gap: 6px; color: var(--text); font-size: 12px; }
+.account-form input { width: 100%; height: 40px; border: 1px solid var(--border-strong); border-radius: 8px; padding: 0 10px; background: var(--surface); color: var(--text-strong); font: inherit; }
+.account-form input:focus { outline: 2px solid rgba(16, 163, 127, .24); border-color: var(--accent); }
+.account-form-actions { display: flex; justify-content: flex-end; padding-top: 2px; }
+.account-form-actions button, .session-settings-heading > button { min-height: 36px; border: 1px solid var(--border-strong); border-radius: 8px; padding: 0 14px; background: var(--surface); color: var(--text); }
+.account-form-actions .primary { border-color: var(--text-strong); background: var(--text-strong); color: #fff; }
+.account-form-actions button:disabled, .session-settings-heading > button:disabled { opacity: .55; }
+.security-settings { display: grid; gap: 26px; }
+.password-form { padding-bottom: 24px; border-bottom: 1px solid var(--border); }
+.session-settings { min-width: 0; }
+.session-settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.user-session-row { min-height: 58px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 11px; border-top: 1px solid var(--border); color: var(--muted); }
+.user-session-row > span { min-width: 0; display: grid; gap: 3px; }
+.user-session-row strong { overflow: hidden; color: var(--text-strong); font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.user-session-row small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.user-session-row > button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); }
+.user-session-row > button:hover { background: var(--surface-hover); color: var(--danger); }
+.account-muted { color: var(--muted); font-size: 12px; }
+.dialog-error.inline, .dialog-success { margin: 0; font-size: 12px; line-height: 1.45; }
+.dialog-success { color: var(--success); }
 .model-settings-loading { padding: 28px 24px; color: var(--muted); }
 .model-settings-form { display: grid; gap: 15px; padding: 20px 24px 0; }
 .model-settings-form > label { display: grid; gap: 6px; }
@@ -2122,8 +2152,21 @@ code {
 
 @media (max-width: 760px) {
   .dialog-backdrop { padding: 8px; }
-  .project-config-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .project-config-dialog, .account-settings-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
   .dialog-header { padding: 16px; }
+  .account-settings-layout { min-height: 0; grid-template-columns: 1fr; overflow: auto; }
+  .account-settings-layout > nav {
+    position: sticky;
+    z-index: 1;
+    top: 0;
+    grid-template-columns: repeat(3,minmax(0,1fr));
+    padding: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .account-settings-layout > nav button { justify-content: center; padding: 0 6px; font-size: 12px; }
+  .account-settings-content { padding: 18px 16px; overflow: visible; }
+  .session-settings-heading { align-items: stretch; flex-direction: column; }
   .project-config-grid { grid-template-columns: 1fr; padding: 14px 16px; }
   .config-form-wide { grid-column: auto; }
   .form-two-columns, .form-three-columns, .config-switch-grid { grid-template-columns: 1fr; }

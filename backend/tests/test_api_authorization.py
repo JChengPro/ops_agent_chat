@@ -13,7 +13,7 @@ from app.models.user import User
 from app.services.seed_service import seed_initial_data
 
 
-def test_viewer_can_read_but_cannot_manage_project():
+def test_every_project_member_has_full_permissions_until_rbac_is_enabled():
     suffix = uuid4().hex[:10]
     with SessionLocal() as db:
         seed_initial_data(db)
@@ -24,9 +24,26 @@ def test_viewer_can_read_but_cannot_manage_project():
         db.add(ProjectMember(project_id=project.id, user_id=viewer.id, role="viewer"))
         db.commit()
         assert require_project(db, viewer, project.id).id == project.id
+        assert require_project_permission(db, viewer, project.id, "project.manage").id == project.id
+
+
+def test_uniform_permissions_do_not_remove_project_membership_isolation():
+    suffix = uuid4().hex[:10]
+    with SessionLocal() as db:
+        seed_initial_data(db)
+        project = db.scalar(select(Project).limit(1))
+        outsider = User(
+            username=f"outsider-{suffix}",
+            email=f"outsider-{suffix}@example.test",
+            password_hash=hash_password("test"),
+            role="user",
+            is_active=True,
+        )
+        db.add(outsider)
+        db.commit()
         with pytest.raises(HTTPException) as exc:
-            require_project_permission(db, viewer, project.id, "project.manage")
-        assert exc.value.status_code == 403
+            require_project_permission(db, outsider, project.id, "project.manage")
+        assert exc.value.status_code == 404
 
 
 def test_environment_connection_must_belong_to_project_owner():

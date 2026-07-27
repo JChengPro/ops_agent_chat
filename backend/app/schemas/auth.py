@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -6,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=1, max_length=128)
+    remember_me: bool = False
 
 
 class RegisterRequest(BaseModel):
@@ -14,6 +16,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=10, max_length=128)
     password_confirmation: str = Field(min_length=10, max_length=128)
     invite_code: str | None = Field(default=None, max_length=256)
+    remember_me: bool = False
 
     @field_validator("username")
     @classmethod
@@ -63,3 +66,49 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+
+
+class ProfileUpdateRequest(BaseModel):
+    username: str = Field(max_length=80)
+    email: str = Field(max_length=255)
+    current_password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        return RegisterRequest.validate_username(value)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return RegisterRequest.validate_email(value)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+    new_password_confirmation: str = Field(min_length=10, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return RegisterRequest.validate_password(value)
+
+    @model_validator(mode="after")
+    def passwords_match(self):
+        if self.new_password != self.new_password_confirmation:
+            raise ValueError("Passwords do not match")
+        if self.current_password == self.new_password:
+            raise ValueError("New password must be different from current password")
+        return self
+
+
+class UserSessionOut(BaseModel):
+    id: str
+    current: bool
+    user_agent: str | None
+    ip_address: str | None
+    remember_me: bool
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime

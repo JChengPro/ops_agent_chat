@@ -6,9 +6,9 @@ services:
     environment:
       POSTGRES_DB: ops_agent_chat
       POSTGRES_USER: opsagent
-      POSTGRES_PASSWORD: opsagent_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opsagent_password}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ops_agent_postgres_data:/var/lib/postgresql/data
       - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -29,7 +29,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000"
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./docs:/app/docs:ro
       - ${VIDEOHUB_SSH_KEY_HOST_DIR:-./secrets}:/run/secrets:ro
@@ -48,7 +48,7 @@ services:
     container_name: ops-agent-frontend
     restart: unless-stopped
     ports:
-      - "5175:80"
+      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-5175}:80"
     depends_on:
       backend:
         condition: service_healthy

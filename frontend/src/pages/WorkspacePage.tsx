@@ -5,6 +5,7 @@ import { cancelCollectorRun, cancelRun, collectContext, createConnection, create
 import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, Entity, Environment, Evidence, ExperienceItem, MonitorEvent, Project, User } from "../api/types";
 import { ProjectConfigDialog, type ProjectConfigurationValue } from "../components/ProjectConfigDialog";
 import { ModelSettingsDialog } from "../components/ModelSettingsDialog";
+import { AccountSettingsDialog } from "../components/AccountSettingsDialog";
 import { applyApprovalBatchResult, chatMessagesRevision, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../uiState";
 
 type Tab = "activity" | "experience" | "config";
@@ -14,7 +15,7 @@ type ProjectConfigTarget = {project:Project|null;environment:Environment|null;co
 type TextDialogState = {title:string;label:string;value:string;submitLabel:string;onSubmit:(value:string)=>Promise<void>}|null;
 type ConfirmDialogState = {title:string;message:string;confirmLabel:string;onConfirm:()=>Promise<void>}|null;
 
-export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promise<void>}) {
+export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpdated:(user:User)=>void;onLogout:()=>void|Promise<void>}) {
   const [projects,setProjects]=useState<Project[]>([]), [sessions,setSessions]=useState<ChatSession[]>([]), [messages,setMessages]=useState<ChatMessage[]>([]);
   const [environments,setEnvironments]=useState<Environment[]>([]), [connections,setConnections]=useState<Connection[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [entities,setEntities]=useState<Entity[]>([]), [collectorRuns,setCollectorRuns]=useState<CollectorRun[]>([]), [monitorEvents,setMonitorEvents]=useState<MonitorEvent[]>([]);
   const [projectId,setProjectId]=useState<number|null>(null), [sessionId,setSessionId]=useState<number|null>(null), [input,setInput]=useState("");
@@ -24,6 +25,7 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
   const [notice,setNotice]=useState<{kind:"success"|"error"|"info";text:string}|null>(null), [approvalBusy,setApprovalBusy]=useState<ApprovalSubmission>(null), [collectorRefreshKey,setCollectorRefreshKey]=useState(0);
   const [projectConfigTarget,setProjectConfigTarget]=useState<ProjectConfigTarget>(null), [textDialog,setTextDialog]=useState<TextDialogState>(null), [confirmDialog,setConfirmDialog]=useState<ConfirmDialogState>(null);
   const [modelSettingsOpen,setModelSettingsOpen]=useState(false);
+  const [accountSettingsOpen,setAccountSettingsOpen]=useState(false);
   const endRef=useRef<HTMLDivElement|null>(null), composerRef=useRef<HTMLInputElement|null>(null), messageRefs=useRef<Record<number,HTMLElement|null>>({}), currentSessionRef=useRef<number|null>(null);
   const project=useMemo(()=>projects.find(x=>x.id===projectId)||null,[projects,projectId]);
   const session=useMemo(()=>sessions.find(x=>x.id===sessionId)||null,[sessions,sessionId]);
@@ -164,6 +166,7 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
   return <main className={`workspace ${leftCollapsed?"left-collapsed":""} ${rightCollapsed?"right-collapsed":""}`} onClick={()=>setMenu(null)}>
     {notice&&<div className={`notice ${notice.kind}`}><span>{notice.text}</span><button onClick={e=>{e.stopPropagation();setNotice(null);}}>×</button></div>}
     {projectConfigTarget&&<ProjectConfigDialog project={projectConfigTarget.project} environment={projectConfigTarget.environment} connection={projectConfigTarget.connection} onClose={()=>setProjectConfigTarget(null)} onSave={saveProjectConfiguration}/>}
+    {accountSettingsOpen&&<AccountSettingsDialog user={user} onClose={()=>setAccountSettingsOpen(false)} onUserUpdated={onUserUpdated} onLogout={onLogout} onOpenModelSettings={()=>{setAccountSettingsOpen(false);setModelSettingsOpen(true);}}/>}
     {modelSettingsOpen&&<ModelSettingsDialog onClose={()=>setModelSettingsOpen(false)} onSaved={message=>showNotice("success",message)}/>}
     {textDialog&&<TextInputDialog {...textDialog} onClose={()=>setTextDialog(null)}/>}
     {confirmDialog&&<ConfirmDialog {...confirmDialog} onClose={()=>setConfirmDialog(null)}/>}
@@ -183,7 +186,7 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
       <section className="left-block session-block"><div className="block-title"><span>聊天记录</span><button className="mini-create" onClick={newSession} title="新建聊天"><Plus size={15}/>新聊天</button></div><div className="session-scroll">
         {sessions.map(item=><div className="nav-entry" key={item.id}><div className={`nav-row ${item.id===sessionId?"selected":""}`}><button className="session-item" onClick={()=>setSessionId(item.id)} title={item.title}><MessageSquare size={16}/><span>{item.title}</span>{item.is_pinned&&<Pin size={13}/>}</button><MoreButton onClick={event=>toggleMenu(event,"session",item.id)}/></div></div>)}
       </div></section>
-      <div className="account-footer"><button className="account-settings" onClick={()=>setModelSettingsOpen(true)} title="模型设置"><UserCircle size={25}/><span>{user.username}</span><Settings size={17}/></button><button className="account-logout" onClick={onLogout} title="退出登录" aria-label="退出登录"><LogOut size={17}/></button></div>
+      <div className="account-footer"><button className="account-settings" onClick={()=>setAccountSettingsOpen(true)} title="账号设置"><UserCircle size={25}/><span>{user.username}</span><Settings size={17}/></button><button className="account-logout" onClick={onLogout} title="退出登录" aria-label="退出登录"><LogOut size={17}/></button></div>
     </aside>
     <section className="glass-panel chat-pane"><header className="chat-header"><div><strong>{project?.name??"通用聊天"}</strong><span>{session?.title??"新会话"}</span></div><div className="chat-header-actions">{project&&activeEnvironment&&<><select className="environment-select" value={activeEnvironment.id} onChange={event=>void selectEnvironment(Number(event.target.value))} title="当前运行环境">{environments.map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select><button type="button" className={`monitoring-status-chip ${monitoringStatus.tone}`} title={`${monitoringStatus.detail} 点击打开配置。`} onClick={()=>configureEnvironment(activeEnvironment)}><Activity size={14}/><span>{monitoringStatus.label}</span></button></>}<button className={`outline-toggle ${navOpen?"active":""}`} onClick={()=>setNavOpen(x=>!x)} title="消息导航"><MessageSquare size={17}/></button><span className="mode-badge">受控运维</span></div></header>
       <MessageNav open={navOpen} messages={messages} jump={id=>messageRefs.current[id]?.scrollIntoView({behavior:"smooth",block:"center"})}/>
@@ -199,7 +202,7 @@ export function WorkspacePage({user,onLogout}:{user:User;onLogout:()=>void|Promi
         environment={activeEnvironment}
         environments={environments}
         connections={connections}
-        canManage={Boolean(project&&project.owner_id===user.id)}
+        canManage={Boolean(project)}
         entities={entities}
         collectorRuns={collectorRuns}
         onCollect={async()=>{

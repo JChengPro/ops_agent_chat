@@ -1,15 +1,18 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const TOKEN_KEY = "ops_token";
 
 export function getToken(): string | null {
-  return localStorage.getItem("ops_token");
+  return localStorage.getItem(TOKEN_KEY) ?? sessionStorage.getItem(TOKEN_KEY);
 }
 
-export function setToken(token: string): void {
-  localStorage.setItem("ops_token", token);
+export function setToken(token: string, remember = false): void {
+  clearToken();
+  (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
 }
 
 export function clearToken(): void {
-  localStorage.removeItem("ops_token");
+  localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
 }
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {

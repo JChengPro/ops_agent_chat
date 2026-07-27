@@ -153,6 +153,8 @@ cp .env.example .env
 ```env
 APP_SECRET_KEY=replace-with-a-long-random-string
 ADMIN_PASSWORD=replace-with-a-strong-password
+POSTGRES_PASSWORD=replace-with-a-strong-database-password
+DATABASE_URL=postgresql+psycopg://opsagent:replace-with-a-url-encoded-password@postgres:5432/ops_agent_chat
 
 LLM_API_KEY=your-api-key
 LLM_BASE_URL=https://api.deepseek.com
@@ -171,6 +173,8 @@ VIDEOHUB_SSH_HOST_FINGERPRINT=SHA256:your-host-key-fingerprint
 模型接口采用 OpenAI-compatible 形式。示例使用 DeepSeek，但项目并不绑定特定厂商或固定模型名称。部署默认模型可以不填写 Key；登录后点击左下角用户名进入“模型设置”，可为当前账号单独配置供应商、Base URL、模型和 API Key。
 
 用户填写的 API Key 会在服务端加密保存，接口只返回“是否已配置”，不会把原始 Key 返回浏览器。自定义模型地址必须先加入部署端的 `LLM_ALLOWED_BASE_URLS`，避免任意地址被用作服务端请求目标。
+
+`POSTGRES_PASSWORD` 与 `DATABASE_URL` 中的密码必须一致。密码包含 `@`、`:`、`/` 等 URL 特殊字符时，需要在 `DATABASE_URL` 中进行 URL 编码。已经初始化过的 PostgreSQL 数据卷不会因为修改 `POSTGRES_PASSWORD` 自动修改数据库内的密码。
 
 ### 2. 准备 SSH 连接
 
@@ -206,10 +210,14 @@ docker compose up -d --build
 
 | 服务 | 地址 |
 | --- | --- |
-| Web 工作台 | http://localhost:5175 |
-| Backend API | http://localhost:8000 |
-| OpenAPI | http://localhost:8000/docs |
-| 健康检查 | http://localhost:8000/health |
+| Web 工作台 | `http://服务器IP:5175` |
+| Backend API | `http://127.0.0.1:8000`，默认只允许服务器本机访问 |
+| OpenAPI | `http://127.0.0.1:8000/docs` |
+| 健康检查 | `http://127.0.0.1:8000/health` |
+
+当前部署阶段使用 HTTP。它适合本机、可信局域网和测试服务器，不适合直接暴露到公网：HTTP 无法加密用户名、密码、JWT 和页面数据。需要公网访问时，下一步应在 Web 入口前增加 HTTPS 反向代理，而不是直接开放 Backend 或 PostgreSQL 端口。
+
+部署到固定服务器时仍应设置 `APP_ENV=production`，并配置强随机的 `APP_SECRET_KEY`、数据库密码、管理员密码和注册邀请码。`production` 表示启用生产配置校验，并不代表当前 HTTP 连接已经具备公网安全性。
 
 ### 4. 检查容器
 
@@ -227,21 +235,44 @@ Compose 会启动：
 
 后端启动时会执行 Alembic 迁移，并初始化管理员、默认项目、环境、Capability 版本和经验种子。
 
-## 用户与注册
+## 用户、注册与登录会话
 
-系统支持登录和自助注册。
+系统是服务端多用户应用，不要求每个用户在本机单独部署。账号、密码摘要、项目权限、聊天记录、模型配置和登录会话都保存在服务端 PostgreSQL 中。
 
 ```env
 REGISTRATION_ENABLED=true
 REGISTRATION_INVITE_CODE=
+JWT_EXPIRE_MINUTES=1440
+JWT_REMEMBER_EXPIRE_MINUTES=43200
 ```
 
 - `ADMIN_*` 只用于首次启动时创建初始管理员。
 - 新注册账号固定为普通用户，不会自动成为管理员。
 - 项目和聊天记录按用户权限隔离。
+- 当前阶段不区分项目管理员、审批人、操作员和只读成员；只要拥有项目访问资格，就拥有该项目的完整功能权限。
+- 完整权限不等于绕过安全治理：变更仍受 Capability、Policy、Action Hash、人工审批和 Verification 约束。
+- 细粒度角色、成员授权和权限管理后台留到后续实现。
+- 用户可以使用用户名或邮箱登录，并在账号设置中修改资料和密码。
+- 密码只保存 PBKDF2 摘要，不保存或回传明文。
+- 每次登录都会创建服务端会话；用户可以查看并撤销其他设备的登录。
+- 普通登录令牌默认有效 1 天，并保存在当前浏览器会话中。
+- 选择“记住我”后，令牌默认有效 30 天，并在浏览器重启后保留。
+- 修改密码会撤销该账号的全部登录会话。
 - 关闭注册时设置 `REGISTRATION_ENABLED=false`。
 - 对外部署时应配置至少 16 位随机注册码。
 - 生产环境开放注册但未设置合格注册码时，后端会拒绝启动。
+
+当前没有接入邮件服务，因此不提供伪造的“忘记密码”入口。密码重置需要后续增加已验证邮箱、一次性令牌和邮件发送链路。
+
+PostgreSQL 数据保存在 Docker 命名卷 `ops_agent_postgres_data`。停止或重建应用容器不会删除账号和聊天数据；执行 `docker compose down -v` 会删除数据卷，不能用于普通升级。
+
+备份示例：
+
+```bash
+mkdir -p backups
+docker compose exec -T postgres \
+  pg_dump -U opsagent -d ops_agent_chat -Fc > "backups/ops_agent_chat-$(date +%Y%m%d-%H%M%S).dump"
+```
 
 ## Agent 执行模型
 
@@ -322,7 +353,13 @@ Docker Compose 变更会继续检查：
 | 变量 | 用途 |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接地址 |
+| `POSTGRES_PASSWORD` | 初始化 PostgreSQL 用户的密码，需与 `DATABASE_URL` 一致 |
+| `POSTGRES_BIND_ADDRESS` | PostgreSQL 宿主机监听地址，默认 `127.0.0.1` |
+| `WEB_BIND_ADDRESS` / `WEB_PORT` | HTTP Web 入口监听地址和端口 |
+| `BACKEND_BIND_ADDRESS` / `BACKEND_PORT` | Backend 直连监听地址和端口，默认仅本机 |
 | `APP_SECRET_KEY` | JWT 签名密钥 |
+| `JWT_EXPIRE_MINUTES` | 普通登录会话有效期 |
+| `JWT_REMEMBER_EXPIRE_MINUTES` | “记住我”登录会话有效期 |
 | `LLM_API_KEY` | 可选的部署默认模型 API Key |
 | `LLM_BASE_URL` | 部署默认 OpenAI-compatible API 地址 |
 | `LLM_PROVIDER` | 模型供应商审计标识 |
@@ -349,6 +386,7 @@ Docker Compose 变更会继续检查：
 
 ```text
 /api/auth
+/api/auth/sessions
 /api/projects
 /api/environments
 /api/connections
@@ -457,6 +495,9 @@ docker-compose.yml         本地一键部署
 ## 安全边界
 
 - `.env`、API Key、注册码和 SSH 私钥不得提交到 Git。
+- PostgreSQL 和 Backend 默认只绑定服务器的 `127.0.0.1`，远程用户只访问 Web 入口。
+- 账号密码只保存不可逆摘要；登录令牌同时受 JWT 过期时间、`token_version` 和服务端会话状态约束。
+- 修改密码会提升 `token_version` 并撤销全部服务端会话。
 - Connection API 只展示凭据和指纹是否已配置，不回传原始值。
 - 用户模型 API Key 只以密文保存，模型配置 API 不回传原始 Key。
 - Agent 只能调用 Registry 中已注册且当前用户有权限的 Capability。
@@ -473,6 +514,8 @@ docker-compose.yml         本地一键部署
 
 当前没有提供：
 
+- 邮件验证和忘记密码邮件；
+- HTTPS 终止；当前 HTTP 部署只面向本机、可信内网和测试环境；
 - 任意 Shell 执行；
 - Web Terminal；
 - 无审批的高风险变更；

@@ -46,6 +46,5 @@ def audit(project_id: int, db: Session = Depends(get_db), user: User = Depends(g
 
 @router.get("/audit-events/verify")
 def verify_audit(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    if user.role != "admin":
-        raise HTTPException(403, "Administrator permission is required")
+    del user
     return verify_audit_chain(db)

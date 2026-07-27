@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models.user import User
+from app.models.user import User, UserSession
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 PBKDF2_ITERATIONS = 260_000
@@ -43,13 +43,19 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:
+def create_access_token(
+    subject: str,
+    extra: dict[str, Any] | None = None,
+    *,
+    expires_minutes: int | None = None,
+) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
+    lifetime = expires_minutes if expires_minutes is not None else settings.jwt_expire_minutes
     payload: dict[str, Any] = {
         "sub": subject,
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=settings.jwt_expire_minutes)).timestamp()),
+        "exp": int((now + timedelta(minutes=lifetime)).timestamp()),
         "jti": str(uuid4()),
     }
     if extra:
@@ -79,4 +85,18 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or missing user")
     if int(payload.get("ver", -1)) != user.token_version:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+    session_id = payload.get("sid")
+    if session_id:
+        user_session = db.get(UserSession, str(session_id))
+        now = datetime.now(timezone.utc)
+        if (
+            not user_session
+            or user_session.user_id != user.id
+            or user_session.revoked_at is not None
+            or user_session.expires_at <= now
+        ):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login session has expired or been revoked")
+        if user_session.last_seen_at < now - timedelta(minutes=5):
+            user_session.last_seen_at = now
+            db.commit()
     return user

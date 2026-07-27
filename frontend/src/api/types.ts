@@ -1,4 +1,5 @@
 export type User = { id: number; username: string; email: string; role: string };
+export type UserSession = { id: string; current: boolean; user_agent?: string|null; ip_address?: string|null; remember_me: boolean; created_at: string; last_seen_at: string; expires_at: string };
 export type LLMSettings = { provider: string; base_url: string; model: string; api_key_configured: boolean; api_key_source: "user"|"deployment"|"none"; source: "user"|"deployment"; allowed_base_urls: string[] };
 export type LLMSettingsPayload = { provider: string; base_url: string; model: string; api_key?: string };
 export type Project = { id: number; owner_id: number; name: string; description?: string; settings_json: Record<string, unknown>; is_active: boolean; is_pinned: boolean; created_at?: string };

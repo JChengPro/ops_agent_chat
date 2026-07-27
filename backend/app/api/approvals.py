@@ -65,7 +65,7 @@ def require_approval(db: Session, user: User, approval_id: str, *, require_waiti
 
 @router.get("/approvals")
 def list_approvals(status: str = "pending", db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    approver_projects = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id, ProjectMember.role.in_(["owner", "approver"]))
+    approver_projects = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
     rows = db.execute(
         select(Approval, Action)
         .join(Action)

@@ -16,7 +16,7 @@ from app.audit.service import append_audit_event, verify_audit_chain
 from app.capabilities.registry import registry
 from app.core.config import Settings
 from app.core.database import SessionLocal
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from app.llm.gateway import LLMGateway, ModelCallCancelled
 from app.llm.configuration import decrypt_api_key, resolve_llm_configuration
 from app.llm.schemas import AgentDecision
@@ -26,7 +26,7 @@ from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.governance import AgentWorker, AuditEvent
 from app.models.project import Connection, Environment, Project, ProjectMember
-from app.models.user import User, UserLLMSettings
+from app.models.user import User, UserLLMSettings, UserSession
 from app.services.seed_service import seed_initial_data
 from app.version import APP_VERSION
 
@@ -61,6 +61,108 @@ def test_logout_revokes_existing_token(client: TestClient):
     assert client.get("/api/auth/me", headers=headers).status_code == 200
     assert client.post("/api/auth/logout", headers=headers).status_code == 204
     assert client.get("/api/auth/me", headers=headers).status_code == 401
+
+
+def test_login_sessions_support_remember_me_and_individual_revocation(client: TestClient):
+    user = create_user()
+    first = client.post(
+        "/api/auth/login",
+        headers={"user-agent": "first-browser"},
+        json={"username": user.username, "password": "correct-password"},
+    )
+    second = client.post(
+        "/api/auth/login",
+        headers={"user-agent": "second-browser", "x-real-ip": "192.0.2.10"},
+        json={"username": user.email, "password": "correct-password", "remember_me": True},
+    )
+    assert first.status_code == second.status_code == 200
+    first_headers = {"Authorization": f"Bearer {first.json()['access_token']}"}
+    second_headers = {"Authorization": f"Bearer {second.json()['access_token']}"}
+    payload = decode_access_token(second.json()["access_token"])
+    assert payload["exp"] - payload["iat"] == 43200 * 60
+
+    sessions = client.get("/api/auth/sessions", headers=second_headers)
+    assert sessions.status_code == 200
+    rows = sessions.json()
+    assert len(rows) == 2
+    current = next(item for item in rows if item["current"])
+    other = next(item for item in rows if not item["current"])
+    assert current["remember_me"] is True
+    assert current["ip_address"] == "192.0.2.10"
+
+    assert client.delete(f"/api/auth/sessions/{other['id']}", headers=second_headers).status_code == 204
+    assert client.get("/api/auth/me", headers=first_headers).status_code == 401
+    assert client.get("/api/auth/me", headers=second_headers).status_code == 200
+
+
+def test_revoke_other_sessions_keeps_current_session(client: TestClient):
+    user = create_user()
+    first = client.post("/api/auth/login", json={"username": user.username, "password": "correct-password"})
+    second = client.post("/api/auth/login", json={"username": user.username, "password": "correct-password"})
+    first_headers = {"Authorization": f"Bearer {first.json()['access_token']}"}
+    second_headers = {"Authorization": f"Bearer {second.json()['access_token']}"}
+
+    assert client.post("/api/auth/sessions/revoke-others", headers=second_headers).status_code == 204
+    assert client.get("/api/auth/me", headers=first_headers).status_code == 401
+    assert client.get("/api/auth/me", headers=second_headers).status_code == 200
+    assert len(client.get("/api/auth/sessions", headers=second_headers).json()) == 1
+
+
+def test_profile_update_requires_password_and_preserves_user_identity(client: TestClient):
+    user = create_user()
+    login_response = client.post("/api/auth/login", json={"username": user.username, "password": "correct-password"})
+    headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+    suffix = uuid4().hex[:8]
+    payload = {
+        "username": f"renamed-{suffix}",
+        "email": f"renamed-{suffix}@example.test",
+        "current_password": "wrong-password",
+    }
+    assert client.patch("/api/auth/me", headers=headers, json=payload).status_code == 403
+    updated = client.patch(
+        "/api/auth/me",
+        headers=headers,
+        json={**payload, "current_password": "correct-password"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["id"] == user.id
+    assert updated.json()["username"] == payload["username"]
+    assert client.post(
+        "/api/auth/login",
+        json={"username": payload["email"], "password": "correct-password"},
+    ).status_code == 200
+
+
+def test_password_change_revokes_every_session_and_accepts_only_new_password(client: TestClient):
+    user = create_user()
+    first = client.post("/api/auth/login", json={"username": user.username, "password": "correct-password"})
+    second = client.post("/api/auth/login", json={"username": user.username, "password": "correct-password"})
+    first_headers = {"Authorization": f"Bearer {first.json()['access_token']}"}
+    second_headers = {"Authorization": f"Bearer {second.json()['access_token']}"}
+    changed = client.post(
+        "/api/auth/password",
+        headers=second_headers,
+        json={
+            "current_password": "correct-password",
+            "new_password": "new-secure-password-123",
+            "new_password_confirmation": "new-secure-password-123",
+        },
+    )
+    assert changed.status_code == 204
+    assert client.get("/api/auth/me", headers=first_headers).status_code == 401
+    assert client.get("/api/auth/me", headers=second_headers).status_code == 401
+    assert client.post(
+        "/api/auth/login",
+        json={"username": user.username, "password": "correct-password"},
+    ).status_code == 401
+    assert client.post(
+        "/api/auth/login",
+        json={"username": user.username, "password": "new-secure-password-123"},
+    ).status_code == 200
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(UserSession.id).where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
+        ) is not None
 
 
 def test_registration_creates_an_isolated_normal_user_and_returns_a_token(client: TestClient):
@@ -115,11 +217,29 @@ def test_registration_honors_invite_code_and_disable_switch(client: TestClient, 
         "password": "secure-pass-123",
         "password_confirmation": "secure-pass-123",
     }
-    monkeypatch.setattr(auth_api, "get_settings", lambda: SimpleNamespace(registration_enabled=True, registration_invite_code="private-registration-code"))
+    monkeypatch.setattr(
+        auth_api,
+        "get_settings",
+        lambda: SimpleNamespace(
+            registration_enabled=True,
+            registration_invite_code="private-registration-code",
+            jwt_expire_minutes=1440,
+            jwt_remember_expire_minutes=43200,
+        ),
+    )
     assert client.get("/api/auth/registration").json() == {"enabled": True, "invite_code_required": True}
     assert client.post("/api/auth/register", json=payload).status_code == 403
     assert client.post("/api/auth/register", json={**payload, "invite_code": "private-registration-code"}).status_code == 201
-    monkeypatch.setattr(auth_api, "get_settings", lambda: SimpleNamespace(registration_enabled=False, registration_invite_code=""))
+    monkeypatch.setattr(
+        auth_api,
+        "get_settings",
+        lambda: SimpleNamespace(
+            registration_enabled=False,
+            registration_invite_code="",
+            jwt_expire_minutes=1440,
+            jwt_remember_expire_minutes=43200,
+        ),
+    )
     assert client.get("/api/auth/registration").json()["enabled"] is False
     assert client.post("/api/auth/register", json={**payload, "username": f"disabled-{suffix}", "email": f"disabled-{suffix}@example.test"}).status_code == 403
 
@@ -433,14 +553,14 @@ def test_system_monitor_session_is_not_exposed_as_user_chat(client: TestClient):
     assert all(item["status"] != "system" for item in response.json())
 
 
-def test_approver_membership_is_visible_in_pending_list(client: TestClient):
-    approver = create_user()
+def test_any_project_member_is_visible_in_pending_approval_list(client: TestClient):
+    member = create_user()
     with SessionLocal() as db:
         seed_initial_data(db)
         owner = db.scalar(select(User).where(User.role == "admin").limit(1))
         project = db.scalar(select(Project).where(Project.owner_id == owner.id).limit(1))
         environment = db.scalar(select(Environment).where(Environment.project_id == project.id).limit(1))
-        db.add(ProjectMember(project_id=project.id, user_id=approver.id, role="approver"))
+        db.add(ProjectMember(project_id=project.id, user_id=member.id, role="viewer"))
         session = ChatSession(project_id=project.id, environment_id=environment.id, user_id=owner.id, title="approval-list")
         db.add(session); db.flush()
         message = ChatMessage(session_id=session.id, project_id=project.id, role="user", content="restart")
@@ -452,7 +572,7 @@ def test_approver_membership_is_visible_in_pending_list(client: TestClient):
         approval = Approval(id=str(uuid4()), action_id=action.id, action_hash=action.action_hash, requested_from=owner.id, decision="pending", impact_summary="将重启 backend。", risk_summary="服务可能短暂不可用。", expires_at=datetime.now(timezone.utc) + timedelta(minutes=10))
         db.add(approval); db.commit()
         approval_id = approval.id
-    response = client.get("/api/approvals", headers=bearer(approver))
+    response = client.get("/api/approvals", headers=bearer(member))
     assert response.status_code == 200
     assert approval_id in {item["id"] for item in response.json()}
 

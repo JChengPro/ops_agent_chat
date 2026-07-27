@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     app_secret_key: str = Field(default="change-me", alias="APP_SECRET_KEY")
     jwt_expire_minutes: int = 1440
+    jwt_remember_expire_minutes: int = Field(default=43200, ge=1440, alias="JWT_REMEMBER_EXPIRE_MINUTES")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     database_url: str = "postgresql+psycopg://opsagent:opsagent_password@localhost:5432/ops_agent_chat"

@@ -12,6 +12,7 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [registration, setRegistration] = useState({ enabled: true, invite_code_required: false });
@@ -48,9 +49,10 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
           password,
           password_confirmation: passwordConfirmation,
           invite_code: inviteCode || undefined,
+          remember_me: rememberMe,
         }));
       } else {
-        onLogin(await login(username, password));
+        onLogin(await login(username, password, rememberMe));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : mode === "register" ? "注册失败" : "登录失败");
@@ -112,13 +114,12 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
           </>}
         </>}
         {error && <div className="error-box">{error}</div>}
-        {mode === "login" && <div className="login-options">
+        <div className="login-options">
           <label className="remember-line">
-            <input type="checkbox" />
-            <span>记住我</span>
+            <input type="checkbox" checked={rememberMe} onChange={event => setRememberMe(event.target.checked)} />
+            <span>{mode === "register" ? "创建后保持登录" : "记住我"}</span>
           </label>
-          <button type="button">忘记密码?</button>
-        </div>}
+        </div>
         {mode === "register" && <div className="registration-note">注册后只拥有普通用户权限，不会自动获得其他项目的访问权。</div>}
         <button className="primary-button" disabled={loading}>{loading ? (mode === "register" ? "注册中..." : "登录中...") : (mode === "register" ? "创建账号" : "登录")}</button>
       </form>

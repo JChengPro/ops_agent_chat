@@ -19,7 +19,15 @@ export function App() {
 
   if (loading) return <div className="boot">Loading Ops Agent Chat...</div>;
   if (!user) return <LoginPage onLogin={setUser} />;
-  return <WorkspacePage user={user} onLogout={async () => {
-    try { await logout(); } finally { clearToken(); setUser(null); }
+  return <WorkspacePage user={user} onUserUpdated={setUser} onLogout={async () => {
+    try {
+      await logout();
+    } catch {
+      // An already revoked or expired server session is still a successful
+      // local logout from the user's perspective.
+    } finally {
+      clearToken();
+      setUser(null);
+    }
   }} />;
 }
