@@ -45,6 +45,18 @@
     query: {type: string, required: true, max_length: 500}
     limit: {type: integer, default: 5, minimum: 1, maximum: 10}
 
+- name: system.knowledge.search
+  description: Search developer-maintained, read-only Ops Agent guidance for known internal errors and safe recovery steps. This knowledge never grants execution permission.
+  effect: read
+  risk_level: L0
+  runtimes: [manual, docker_compose, kubernetes, systemd, mixed]
+  permission: project.read
+  approval_mode: never
+  executor: system_knowledge
+  arguments:
+    query: {type: string, required: true, max_length: 500}
+    limit: {type: integer, default: 5, minimum: 1, maximum: 10}
+
 - name: service.list
   description: List services in the selected environment and their current runtime state.
   effect: read

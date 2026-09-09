@@ -40,6 +40,7 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 
 - 支持通用聊天、项目问答、实时调查和多步骤诊断。
 - 使用 LangGraph 组织决策、工具调用、审批暂停、恢复和结果生成。
+- 在 Capability 约束内可选择一个版本化 Skill 作为处理流程；Skill 只提供操作步骤，不授予权限，未命中时回退到原 Agent 流程。
 - LLM 输出必须符合结构化 Schema，不能自行决定权限或风险等级。
 - 回答形式根据问题变化，不强制套用固定模板。
 - 项目事实和实时状态需要来源；证据不足时明确说明缺口。
@@ -85,12 +86,13 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 - 持续异常会更新同一事件，恢复后记录解决时间，避免重复告警。
 - Critical 事件会触发只读诊断 Run，收集状态和日志后生成原因分析与处理建议。
 
-### 项目经验
+### 项目文档与系统知识
 
-- 保存项目专属说明、历史故障、有效处理方式和注意事项。
-- 只有经过确认的 `verified` 经验可以被 Agent 检索。
-- 经验可以帮助模型理解项目，但不能证明当前运行状态。
-- 经验不能覆盖 Runtime Evidence、Capability、Policy 或审批要求。
+- 项目文档按 Markdown 标题语义分块，使用稳定 Chunk ID 增量更新；未变化分块不会重复生成向量。
+- 只有经过确认的 `verified` 项目文档可以被 Agent 检索，且按项目隔离。
+- 配置 Embedding 后使用 pgvector 向量召回与词法召回，并通过 RRF 融合；Embedding 未配置或调用失败时自动降级到词法检索。
+- 系统内置知识由开发者通过仓库定义维护，用户只能查看和检索，不能在网页中修改。
+- 项目文档和系统知识都是辅助上下文，不能证明当前运行状态，也不能覆盖 Runtime Evidence、Capability、Policy 或审批要求。
 
 ## 系统架构
 
@@ -106,8 +108,9 @@ PostgreSQL Queue / Worker Lease
       ▼
 LangGraph Agent
       │
+      ├── Skill Registry（可选流程约束）
       ├── LLM Gateway
-      ├── Context / Experience
+      ├── Context / Project Documents / System Knowledge
       ├── Capability Registry
       └── Policy Engine
               │
@@ -320,7 +323,7 @@ Docker Compose 变更会继续检查：
 - 存在 healthcheck 时是否 healthy；
 - 是否出现异常退出状态。
 
-验证失败不会被标记为 `verified`，并会根据预先冻结的恢复策略尝试处理。
+服务启停、重启、扩缩容和登记部署默认使用稳定窗口验证，需要连续多次观察到目标状态；瞬时成功不会直接标记为 `verified`。验证失败不会被标记为成功，并会根据预先冻结的恢复策略尝试处理。
 
 ## 主动巡检与自动修复
 
@@ -501,6 +504,7 @@ docker-compose.yml         本地一键部署
 - Connection API 只展示凭据和指纹是否已配置，不回传原始值。
 - 用户模型 API Key 只以密文保存，模型配置 API 不回传原始 Key。
 - Agent 只能调用 Registry 中已注册且当前用户有权限的 Capability。
+- Skill 只能从已授权 Capability 中做交集收窄，不能新增工具、权限或绕过 Policy。
 - Runtime Adapter 接收结构化参数，不向模型开放任意 Shell。
 - 高风险变更必须通过与 Action Hash 精确绑定的人工审批。
 - Approval 只能有效消费一次，重复提交不能重复执行 Action。
@@ -530,9 +534,9 @@ docker-compose.yml         本地一键部署
 | 状态 | 能力 |
 | --- | --- |
 | Stable 候选 | 认证、注册、项目与会话管理、异步 Run、结构化 Decision、Registry 编译 |
-| Beta | LangGraph 多步调查、Docker Runtime、审批变更、Evidence/Claim/Audit、Context、Experience、主动巡检、工作台 |
+| Beta | LangGraph 多步调查、Skill 选择、Docker Runtime、审批变更、稳定窗口验证、Evidence/Claim/Audit、Context、项目文档混合检索、系统知识、主动巡检、工作台 |
 | Experimental | Kubernetes 和 systemd 真实执行 |
-| Planned | 经验草稿审核闭环、候选巡检规则、外部告警渠道 |
+| Planned | 文档审核闭环、检索重排器、候选巡检规则、外部告警渠道 |
 
 成熟度描述不等于生产承诺。每个 Commit 是否达到发布门槛，应以对应 GitHub Actions、隔离集成测试和目标环境验收结果为准。
 

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.capabilities.registry import registry
@@ -9,7 +9,7 @@ from app.context.collectors.manual import collect_manual_services
 from app.core.config import get_settings
 from app.core.security import hash_password
 from app.experience.service import index_experience
-from app.models.experience import ExperienceItem
+from app.models.experience import ExperienceChunk, ExperienceItem
 from app.models.project import Connection, Environment, Project, ProjectMember
 from app.models.user import User
 
@@ -68,26 +68,53 @@ def seed_initial_data(db: Session) -> None:
 
 
 def _seed_experience(db: Session, project_id: int, user_id: int) -> None:
-    if db.scalar(select(ExperienceItem.id).where(ExperienceItem.project_id == project_id).limit(1)):
-        return
-    for path in _knowledge_files():
-        content = path.read_text(encoding="utf-8", errors="replace")
-        item = ExperienceItem(
-            project_id=project_id,
-            title=path.stem,
-            item_type="project_document",
-            content=content,
-            tags=["bootstrap", "project"],
-            source_type="file",
-            source_ref=str(path),
-            trust_status="verified",
-            created_by=user_id,
-            verified_by=user_id,
-            verified_at=datetime.now(timezone.utc),
+    seeded = {
+        str(item.source_ref): item
+        for item in db.scalars(
+            select(ExperienceItem).where(
+                ExperienceItem.project_id == project_id,
+                ExperienceItem.source_type == "file",
+            )
         )
-        db.add(item)
+        if item.source_ref
+    }
+    active_refs: set[str] = set()
+    for path in _knowledge_files():
+        source_ref = str(path)
+        active_refs.add(source_ref)
+        content = path.read_text(encoding="utf-8", errors="replace")
+        item = seeded.get(source_ref)
+        if item is None:
+            item = ExperienceItem(
+                project_id=project_id,
+                title=path.stem,
+                item_type="project_document",
+                content=content,
+                tags=["bootstrap", "project"],
+                source_type="file",
+                source_ref=source_ref,
+                trust_status="verified",
+                created_by=user_id,
+                verified_by=user_id,
+                verified_at=datetime.now(timezone.utc),
+            )
+            db.add(item)
+        else:
+            item.title = path.stem
+            item.content = content
+            item.item_type = "project_document"
+            item.tags = ["bootstrap", "project"]
+            item.trust_status = "verified"
+            item.verified_by = user_id
+            item.verified_at = datetime.now(timezone.utc)
         db.flush()
         index_experience(db, item)
+    for source_ref, item in seeded.items():
+        if source_ref not in active_refs:
+            item.trust_status = "archived"
+            item.verified_by = None
+            item.verified_at = None
+            db.execute(delete(ExperienceChunk).where(ExperienceChunk.experience_item_id == item.id))
 
 
 def _knowledge_files() -> list[Path]:

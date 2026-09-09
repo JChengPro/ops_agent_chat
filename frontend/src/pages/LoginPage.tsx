@@ -64,7 +64,7 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
   return (
     <main className="login-shell">
       <form className={`login-panel ${mode === "register" ? "registration-panel" : ""}`} onSubmit={submit}>
-        <div className="brand-mark"><span>&gt;_</span></div>
+        <div className="brand-mark"><img src="/ops-agent-logo.png" alt="" /></div>
         <h1>Ops Agent Chat</h1>
         <p>{mode === "register" ? "创建你的独立运维工作区" : "安全、可追踪的智能运维工作台"}</p>
         {registration.enabled && <div className="auth-mode-switch" aria-label="认证方式">

@@ -111,7 +111,7 @@ def test_direct_answer_and_read_investigation_and_approval_resume():
             assert finished["assistant_message"]["content"] == "Redis 已重启并完成验证。"
             db.expire_all()
             status_actions = list(db.scalars(select(Action).where(Action.run_id == run.id, Action.capability_name == "service.status")))
-            assert len(status_actions) == 3  # initial precheck, post-approval recheck, verifier
+            assert len(status_actions) == 4  # initial precheck, post-approval recheck, two stable verifier reads
             change_action = db.scalar(select(Action).where(Action.run_id == run.id, Action.capability_name == "service.restart"))
             assert change_action.status == "verified"
             calls_before_retry = executor.calls
@@ -488,9 +488,9 @@ def test_failed_post_change_verification_triggers_automatic_rollback():
             if capability.name == "service.status":
                 self.status_calls += 1
                 result = AdapterResult(
-                    "failed" if self.status_calls == 3 else "success",
-                    "Post-change status failed" if self.status_calls == 3 else "Service is running",
-                    {"stdout": "" if self.status_calls == 3 else '{"State":"running"}\n'},
+                    "failed" if self.status_calls >= 3 else "success",
+                    "Post-change status failed" if self.status_calls >= 3 else "Service is running",
+                    {"stdout": "" if self.status_calls >= 3 else '{"State":"running"}\n'},
                 )
             else:
                 result = AdapterResult("success", "Restart command accepted", {"state": "changed"})

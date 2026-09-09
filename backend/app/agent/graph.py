@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -21,7 +22,8 @@ from app.models.project import Connection, Environment, Project, ProjectMember
 from app.policy.action_hash import action_snapshot, compute_action_hash, configuration_revision
 from app.policy.engine import PolicyEngine, permissions_for_role
 from app.runtime.executor import RuntimeExecutor
-from app.runtime.verification import runtime_records, verification_satisfied
+from app.runtime.verification import runtime_records, verification_satisfied, verification_window
+from app.skills.registry import skill_registry
 
 
 def approval_summaries(capability_name: str, target: dict[str, Any], rollback: dict[str, Any] | None) -> tuple[str, str]:
@@ -117,13 +119,15 @@ class OpsAgentGraph:
     def _build(self):
         graph = StateGraph(AgentState)
         graph.add_node("resolve_capabilities", self.resolve_capabilities)
+        graph.add_node("select_skill", self.select_skill)
         graph.add_node("decide", self.decide)
         graph.add_node("prepare_actions", self.prepare_actions)
         graph.add_node("await_approval", self.await_approval)
         graph.add_node("execute", self.execute)
         graph.add_node("finish", self.finish)
         graph.add_edge(START, "resolve_capabilities")
-        graph.add_edge("resolve_capabilities", "decide")
+        graph.add_edge("resolve_capabilities", "select_skill")
+        graph.add_edge("select_skill", "decide")
         graph.add_conditional_edges("decide", self.route_decision, {"prepare": "prepare_actions", "finish": "finish"})
         graph.add_conditional_edges("prepare_actions", self.route_prepared, {"approval": "await_approval", "execute": "execute", "decide": "decide", "finish": "finish"})
         graph.add_conditional_edges("await_approval", self.route_approval, {"execute": "execute", "finish": "finish"})
@@ -166,6 +170,68 @@ class OpsAgentGraph:
             self._step(db, state, "resolve_capabilities", {"count": len(capabilities), "runtime": runtime_type})
             db.commit()
         return {"context": context, "capabilities": capabilities, "evidence": [], "tool_call_count": 0, "step_count": 1, "status": "running"}
+
+    def select_skill(self, state: AgentState) -> dict:
+        capabilities = state.get("capabilities", [])
+        available = {str(item.get("name")) for item in capabilities}
+        runtime_type = str(state.get("context", {}).get("runtime_type") or "")
+        candidates = skill_registry.resolve(runtime_type, available)
+        selected = None
+        fallback_reason = "no matching skill"
+        with SessionLocal() as db:
+            run = db.get(AgentRun, state["run_id"])
+            try:
+                if state.get("execution_mode") == "monitor_diagnosis":
+                    selected = next((item for item in candidates if item.name == "runtime-diagnosis"), None)
+                    fallback_reason = "monitor diagnosis uses the read-only diagnosis skill"
+                elif candidates:
+                    selection = self.gateway.select_skill(
+                        db,
+                        run_id=state["run_id"],
+                        question=state["question"],
+                        context=state.get("context", {}),
+                        skills=[item.selector_schema() for item in candidates],
+                        cancel_check=lambda: self._run_cancelled(state["run_id"]),
+                    )
+                    selected = skill_registry.get(selection.name) if selection.name else None
+                    fallback_reason = selection.reason or fallback_reason
+            except Exception as exc:  # noqa: BLE001
+                if run and (run.status == "cancelled" or run.cancel_requested_at):
+                    raise
+                fallback_reason = f"skill selector unavailable: {type(exc).__name__}"
+
+            context = dict(state.get("context", {}))
+            if selected:
+                capabilities = skill_registry.narrow_capabilities(selected, capabilities)
+                context["skill"] = {
+                    **selected.trace(),
+                    "description": selected.description,
+                    "instructions": selected.instructions,
+                }
+                trace = selected.trace()
+            else:
+                context.pop("skill", None)
+                trace = None
+            if run:
+                run.plan_json = {**(run.plan_json or {}), "skill": trace}
+            self._step(
+                db,
+                state,
+                "select_skill",
+                {
+                    "selected": selected.name if selected else None,
+                    "candidate_count": len(candidates),
+                    "capability_count": len(capabilities),
+                    "fallback_reason": fallback_reason if not selected else None,
+                },
+            )
+            db.commit()
+        return {
+            "context": context,
+            "capabilities": capabilities,
+            "selected_skill": trace,
+            "step_count": state.get("step_count", 0) + 1,
+        }
 
     def decide(self, state: AgentState) -> dict:
         settings = get_settings()
@@ -226,7 +292,7 @@ class OpsAgentGraph:
                     "claims": [],
                 }
                 run.request_json = {**request, **controls}
-                run.plan_json = {"tool_calls": bootstrap_calls, "source": "monitor_diagnostic_bootstrap"}
+                run.plan_json = {**(run.plan_json or {}), "tool_calls": bootstrap_calls, "source": "monitor_diagnostic_bootstrap"}
                 self._step(
                     db,
                     state,
@@ -259,7 +325,7 @@ class OpsAgentGraph:
                     if isinstance(run.request_json, dict) and key in run.request_json
                 }
                 run.request_json = {**payload["request"], **controls}
-                run.plan_json = {"tool_calls": payload["tool_calls"]}
+                run.plan_json = {**(run.plan_json or {}), "tool_calls": payload["tool_calls"]}
                 self._step(db, state, "decision", {"decision": decision.decision, "tool_calls": len(decision.tool_calls)})
                 db.commit()
                 answer = decision.answer if decision.decision == "respond" else decision.clarification_question if decision.decision == "clarify" else ""
@@ -799,53 +865,24 @@ class OpsAgentGraph:
                     observations.append({**rollback, "rollback_for": action.id})
                     action.status = self._rollback_action_status(rollback)
                 if action.effect == "change" and observation["status"] == "success" and definition.verifier:
-                    verifier = self._bound_related_definition(action, "verifier")
-                    if not verifier:
-                        action.status = "verification_failed"
-                        observations.append({"action_id": action.id, "status": "failed", "summary": "Registered verifier is missing"})
-                        rollback = self.executor.rollback(db, action, definition)
-                        observations.append({**rollback, "rollback_for": action.id})
-                        action.status = self._rollback_action_status(rollback)
-                        append_audit_event(db, actor_type="agent", actor_id=state["run_id"], event_type="action.executed", payload={"status": action.status}, project_id=action.project_id, environment_id=action.environment_id, run_id=action.run_id, action_id=action.id)
+                    verification_observations, verification_calls, verified, abandoned = self._run_post_change_verification(
+                        db,
+                        state,
+                        action,
+                        definition,
+                        execution_token,
+                    )
+                    observations.extend(verification_observations)
+                    executed_calls += verification_calls
+                    if abandoned:
                         continue
-                    verify_arguments = {name: action.arguments_json[name] for name in verifier.arguments if name in action.arguments_json}
-                    verify_resolved = {**action.resolved_spec_json, "capability_bindings": registry.related_bindings(verifier)}
-                    verification_token = str(uuid4())
-                    verify_action = Action(id=str(uuid4()), run_id=action.run_id, capability_name=verifier.name, capability_version=verifier.version, capability_definition_hash=registry.definition_hash(verifier.name, verifier.version), risk_level=verifier.risk_level, approval_mode=verifier.approval_mode, policy_version=self.policy.policy_version, config_revision=action.config_revision, project_id=action.project_id, environment_id=action.environment_id, target_json=action.target_json, arguments_json=verify_arguments, resolved_spec_json=verify_resolved, rollback_spec_json={}, purpose="Post-change verification", effect="read", action_hash="", status="executing", execution_token=verification_token, execution_started_at=datetime.now(timezone.utc))
-                    verify_action.action_hash = compute_action_hash(action_snapshot(verify_action))
-                    db.add(verify_action)
-                    db.flush()
-                    verify_policy = self.policy.evaluate(db, verify_action, verifier, state["user_id"])
-                    db.add(PolicyDecision(action_id=verify_action.id, decision=verify_policy.decision, risk_level=verify_policy.risk_level, reason_code=verify_policy.reason_code, reason=verify_policy.reason, matched_policies_json=verify_policy.matched_policies, policy_version=self.policy.policy_version))
-                    if verify_policy.decision != "allow":
-                        verify_action.status = "denied"
-                        verification = {"capability": verifier.name, "status": "denied", "summary": verify_policy.reason}
-                    else:
-                        db.commit()
-                        action = db.get(Action, action.id)
-                        verify_action = db.get(Action, verify_action.id)
-                        verification = self.executor.execute(db, verify_action, verifier)
-                        if not self._execution_owned(db, action.id, execution_token) or not self._execution_owned(db, verify_action.id, verification_token):
-                            db.rollback()
-                            observations.append({
-                                "action_id": action.id,
-                                "status": "execution_unknown",
-                                "summary": "Late verification result was ignored after the Worker lost its lease",
-                            })
-                            continue
-                        action = db.get(Action, action.id)
-                        verify_action = db.get(Action, verify_action.id)
-                        executed_calls += 1
-                        verify_action.status = "succeeded" if verification["status"] == "success" else "failed"
-                        verify_action.execution_finished_at = datetime.now(timezone.utc)
-                    verification["verification_for"] = action.id
-                    observations.append(verification)
-                    action.status = "verified" if self._verification_satisfied(action, verification) else "verification_failed"
+                    action = db.get(Action, action.id)
+                    action.status = "verified" if verified else "verification_failed"
                     if action.status == "verification_failed":
                         rollback = self.executor.rollback(db, action, definition)
                         observations.append({**rollback, "rollback_for": action.id})
                         action.status = self._rollback_action_status(rollback)
-                    elif action.status == "verified":
+                    else:
                         self.executor.finalize(db, action, definition)
                 append_audit_event(db, actor_type="agent", actor_id=state["run_id"], event_type="action.executed", payload={"status": action.status}, project_id=action.project_id, environment_id=action.environment_id, run_id=action.run_id, action_id=action.id)
             self._step(db, state, "execute", {"observations": len(observations)})
@@ -1034,6 +1071,153 @@ class OpsAgentGraph:
         precheck_action.status = "succeeded" if observation.get("status") == "success" else "failed"
         precheck_action.execution_finished_at = datetime.now(timezone.utc)
         return observation
+
+    def _run_post_change_verification(
+        self,
+        db,
+        state: AgentState,
+        change_action: Action,
+        change_definition,
+        execution_token: str,
+    ) -> tuple[list[dict[str, Any]], int, bool, bool]:
+        verifier = self._bound_related_definition(change_action, "verifier")
+        if not verifier:
+            return ([{
+                "action_id": change_action.id,
+                "status": "failed",
+                "summary": "Registered verifier is missing",
+                "verification_for": change_action.id,
+            }], 0, False, False)
+
+        settings = get_settings()
+        attempts, required_consecutive = verification_window(
+            change_action.capability_name,
+            max_attempts=settings.verification_max_attempts,
+            required_consecutive=settings.verification_required_consecutive,
+        )
+        observations: list[dict[str, Any]] = []
+        executed_calls = 0
+        consecutive_successes = 0
+
+        for attempt in range(1, attempts + 1):
+            if attempt > 1 and settings.verification_interval_seconds:
+                time.sleep(settings.verification_interval_seconds)
+            if not self._execution_owned(db, change_action.id, execution_token):
+                db.rollback()
+                observations.append({
+                    "action_id": change_action.id,
+                    "status": "execution_unknown",
+                    "summary": "Verification stopped because the Run or Action is no longer executable",
+                    "verification_for": change_action.id,
+                    "verification_attempt": attempt,
+                })
+                return observations, executed_calls, False, True
+
+            verify_arguments = {
+                name: change_action.arguments_json[name]
+                for name in verifier.arguments
+                if name in change_action.arguments_json
+            }
+            verify_resolved = {
+                **change_action.resolved_spec_json,
+                "capability_bindings": registry.related_bindings(verifier),
+            }
+            verification_token = str(uuid4())
+            verify_action = Action(
+                id=str(uuid4()),
+                run_id=change_action.run_id,
+                capability_name=verifier.name,
+                capability_version=verifier.version,
+                capability_definition_hash=registry.definition_hash(verifier.name, verifier.version),
+                risk_level=verifier.risk_level,
+                approval_mode=verifier.approval_mode,
+                policy_version=self.policy.policy_version,
+                config_revision=change_action.config_revision,
+                project_id=change_action.project_id,
+                environment_id=change_action.environment_id,
+                target_json=change_action.target_json,
+                arguments_json=verify_arguments,
+                resolved_spec_json=verify_resolved,
+                rollback_spec_json={},
+                purpose=f"Post-change verification attempt {attempt}/{attempts}",
+                effect="read",
+                action_hash="",
+                status="executing",
+                execution_token=verification_token,
+                execution_started_at=datetime.now(timezone.utc),
+            )
+            verify_action.action_hash = compute_action_hash(action_snapshot(verify_action))
+            db.add(verify_action)
+            db.flush()
+            verify_policy = self.policy.evaluate(db, verify_action, verifier, state["user_id"])
+            db.add(PolicyDecision(
+                action_id=verify_action.id,
+                decision=verify_policy.decision,
+                risk_level=verify_policy.risk_level,
+                reason_code=verify_policy.reason_code,
+                reason=verify_policy.reason,
+                matched_policies_json=verify_policy.matched_policies,
+                policy_version=self.policy.policy_version,
+            ))
+            if verify_policy.decision != "allow":
+                verify_action.status = "denied"
+                verification = {
+                    "capability": verifier.name,
+                    "status": "denied",
+                    "summary": verify_policy.reason,
+                    "verification_for": change_action.id,
+                    "verification_attempt": attempt,
+                    "verification_attempts": attempts,
+                    "consecutive_successes": consecutive_successes,
+                    "required_consecutive_successes": required_consecutive,
+                }
+                observations.append(verification)
+                return observations, executed_calls, False, False
+            else:
+                db.commit()
+                change_action = db.get(Action, change_action.id)
+                verify_action = db.get(Action, verify_action.id)
+                try:
+                    verification = self.executor.execute(db, verify_action, verifier)
+                except Exception as exc:  # noqa: BLE001
+                    verification = {
+                        "capability": verifier.name,
+                        "status": "failed",
+                        "summary": "Post-change verifier execution failed",
+                        "error": str(exc)[:1000],
+                    }
+                if not self._execution_owned(db, change_action.id, execution_token) or not self._execution_owned(db, verify_action.id, verification_token):
+                    db.rollback()
+                    observations.append({
+                        "action_id": change_action.id,
+                        "status": "execution_unknown",
+                        "summary": "Late verification result was ignored after the Worker lost its lease",
+                        "verification_for": change_action.id,
+                        "verification_attempt": attempt,
+                    })
+                    return observations, executed_calls, False, True
+                change_action = db.get(Action, change_action.id)
+                verify_action = db.get(Action, verify_action.id)
+                executed_calls += 1
+                verify_action.status = "succeeded" if verification.get("status") == "success" else "failed"
+                verify_action.execution_finished_at = datetime.now(timezone.utc)
+
+            satisfied = self._verification_satisfied(change_action, verification)
+            consecutive_successes = consecutive_successes + 1 if satisfied else 0
+            verification.update({
+                "verification_for": change_action.id,
+                "verification_attempt": attempt,
+                "verification_attempts": attempts,
+                "consecutive_successes": consecutive_successes,
+                "required_consecutive_successes": required_consecutive,
+            })
+            observations.append(verification)
+            if consecutive_successes >= required_consecutive:
+                return observations, executed_calls, True, False
+            db.commit()
+            change_action = db.get(Action, change_action.id)
+
+        return observations, executed_calls, False, False
 
     @staticmethod
     def _action_snapshot(action: Action) -> dict[str, Any]:

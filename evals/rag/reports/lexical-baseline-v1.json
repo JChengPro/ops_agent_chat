@@ -1,0 +1,236 @@
+{
+  "evaluator": "current-lexical-compatible-v1",
+  "generated_at": "2026-09-03T04:44:59.325526+00:00",
+  "dataset": "evals/rag/golden-v1.jsonl",
+  "retrieval_limit": 5,
+  "eligible_case_count": 15,
+  "metrics": {
+    "source_recall_at_5": 0.6,
+    "mean_reciprocal_rank": 0.43333333333333335,
+    "hits": 9,
+    "misses": 6,
+    "by_split": {
+      "dev": {
+        "cases": 11,
+        "hits": 6,
+        "source_recall_at_5": 0.5454545454545454
+      },
+      "holdout": {
+        "cases": 4,
+        "hits": 3,
+        "source_recall_at_5": 0.75
+      }
+    }
+  },
+  "limitations": [
+    "Only verified project-document retrieval cases are scored.",
+    "The evaluator mirrors current lexical candidate filtering and scoring; it does not call an LLM.",
+    "Runtime, policy, system-knowledge, abstention, and answer-quality cases require separate evaluators."
+  ],
+  "cases": [
+    {
+      "id": "proj-001",
+      "split": "dev",
+      "question": "VideoHub 默认环境使用什么运行时？",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "proj-002",
+      "split": "dev",
+      "question": "配置 VideoHub 环境时必须登记哪些内容？",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:troubleshooting",
+        "project:videohub:compose-ops"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "proj-003",
+      "split": "dev",
+      "question": "VideoHub 的服务名称应该从哪里确认？",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "proj-004",
+      "split": "dev",
+      "question": "Agent 可以让模型自己拼 docker compose 部署命令吗？",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:readme",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-005",
+      "split": "dev",
+      "question": "排查 Docker Compose 项目时，第一步应该做什么？",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:readme"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "proj-006",
+      "split": "dev",
+      "question": "什么情况下才需要读取服务日志？",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [],
+      "hit": false,
+      "first_relevant_rank": null
+    },
+    {
+      "id": "proj-007",
+      "split": "dev",
+      "question": "工具输出和项目文档可以覆盖系统指令吗？",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [],
+      "hit": false,
+      "first_relevant_rank": null
+    },
+    {
+      "id": "proj-008",
+      "split": "dev",
+      "question": "删除容器或卷能不能通过临时审批放行？",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [],
+      "hit": false,
+      "first_relevant_rank": null
+    },
+    {
+      "id": "proj-009",
+      "split": "dev",
+      "question": "项目整体不可用时，文档建议优先检查什么？",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [],
+      "hit": false,
+      "first_relevant_rank": null
+    },
+    {
+      "id": "proj-010",
+      "split": "holdout",
+      "question": "Nginx 返回 502 通常说明什么，能直接认定后端挂了吗？",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-011",
+      "split": "holdout",
+      "question": "Redis 连接失败有哪些常见原因？",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:troubleshooting",
+        "project:videohub:deployment"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-012",
+      "split": "holdout",
+      "question": "磁盘不足可能造成什么影响，Agent 能直接清理吗？",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "multi-001",
+      "split": "dev",
+      "question": "为什么模型既不能猜服务名，也不能自己指定 Compose 文件？",
+      "expected_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:readme"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:readme",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "multi-005",
+      "split": "dev",
+      "question": "执行已注册部署前后必须经过哪些治理步骤？",
+      "expected_source_ids": [
+        "project:videohub:compose-ops",
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [],
+      "hit": false,
+      "first_relevant_rank": null
+    },
+    {
+      "id": "multi-008",
+      "split": "holdout",
+      "question": "项目资料可能过期时，系统应怎样处理答案？",
+      "expected_source_ids": [
+        "project:videohub:readme"
+      ],
+      "retrieved_source_ids": [],
+      "hit": false,
+      "first_relevant_rank": null
+    }
+  ]
+}

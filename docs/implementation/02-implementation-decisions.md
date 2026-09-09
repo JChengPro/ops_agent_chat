@@ -47,3 +47,19 @@ ContextSource ID 只从受控 Context Capability 的顶层 `source_ids` 获取�
 ## D-012 远端恢复前先持久化执行意图
 
 precheck、主 Action、Capability rollback 和 post-change verifier 在远端调用前必须提交带唯一 token 的 executing 标记。远端返回后，只有 Action token 仍匹配且 Run 仍为 running、未请求取消时才能提交结果。Worker 崩溃或用户取消后标记 execution_unknown，不根据缺失记录猜测成功，也不自动重放。
+
+## D-013 Skill 只收窄能力，不授予能力
+
+Skill 是版本化、带定义 Hash 的操作流程说明。LLM 最多选择一个符合 Runtime 和必需 Capability 的 Skill；最终暴露能力是原授权能力与 Skill `allowed_capabilities` 的交集。选择失败或未命中时回退到原有 Capability + Policy 链路，Skill 不能新增权限、改变风险或绕过审批。
+
+## D-014 项目文档采用稳定分块和混合召回
+
+Markdown 文档按标题路径和段落分块，Chunk ID 由来源、标题路径、同名标题序号和分块序号确定，内容 Hash 单独判断是否需要更新向量。检索优先融合 PostgreSQL 词法排序与 pgvector 余弦距离排名；Embedding 未配置或失败时降级为词法检索。
+
+## D-015 系统知识与项目文档隔离
+
+系统知识由开发者维护的 YAML 定义编译，提供已知内部错误和安全恢复步骤；API 和前端只读。项目文档属于项目并按项目 ID 隔离。两者都只提供上下文，不构成实时状态证据，也不能改变 Capability、Policy 或 Approval。
+
+## D-016 运行状态变更采用稳定窗口验证
+
+服务启停、重启、扩缩容和登记部署不能以单次成功观察结束。默认最多验证三次，要求连续两次满足 Runtime 专用 verifier；每次验证保存独立 Action 和 Evidence。策略拒绝、绑定缺失、解析失败、所有权丢失或窗口耗尽均不能标记为 verified。

@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres import PostgresSaver
 
-from app.api import agent_runs, approvals, auth, chat, connections, context_experience, governance, llm_settings, projects
+from app.api import agent_runs, approvals, auth, chat, connections, context_experience, governance, llm_settings, projects, system_knowledge
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.database import get_db
@@ -39,7 +39,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-for router in (auth.router, connections.router, projects.router, chat.router, agent_runs.router, approvals.router, context_experience.router, governance.router, llm_settings.router):
+for router in (auth.router, connections.router, projects.router, chat.router, agent_runs.router, approvals.router, context_experience.router, governance.router, llm_settings.router, system_knowledge.router):
     app.include_router(router, prefix="/api")
 
 

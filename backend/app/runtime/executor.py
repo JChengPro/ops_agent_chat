@@ -22,6 +22,7 @@ from app.runtime.adapters.kubernetes import KubernetesAdapter
 from app.runtime.adapters.registered import RegisteredConfigAdapter, RegisteredDeploymentAdapter, rollback_deployment
 from app.runtime.adapters.systemd import SystemdAdapter
 from app.runtime.transports.ssh import SSHTransport
+from app.system_knowledge.registry import system_knowledge_registry
 
 
 class RuntimeExecutor:
@@ -90,6 +91,9 @@ class RuntimeExecutor:
         if capability.executor == "experience":
             data = search_experience(db, action.project_id, args["query"], args.get("limit", 5))
             return self._record(db, action, "experience", AdapterResult("success", "已检索已验证的项目经验", data))
+        if capability.executor == "system_knowledge":
+            data = system_knowledge_registry.search(args["query"], args.get("limit", 5))
+            return self._record(db, action, "system_knowledge", AdapterResult("success", "已检索系统内置知识库", data))
         connection = self._resolved_connection(db, environment, resolved)
         cancel_check = (lambda: False) if ignore_cancellation else (lambda: self._cancelled(action.run_id))
         if capability.name == "http.health_check":

@@ -7,6 +7,8 @@ secrets/*
 
 # User/private design drafts
 Ops_Agent_Chat项目设计相关文档/
+resume/
+/程健简历*.pdf
 
 # Python
 __pycache__/

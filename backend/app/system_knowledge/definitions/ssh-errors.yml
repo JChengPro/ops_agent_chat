@@ -1,0 +1,55 @@
+- id: ssh_credential_not_configured
+  title: 项目尚未配置 SSH 私钥
+  summary: Connection 没有登记私钥引用，系统不知道应读取哪个密钥文件。
+  tags: [ssh, credential, configuration]
+  content: |
+    在项目配置中填写目标主机、端口、受限 SSH 用户和私钥引用。私钥引用是 Backend、Worker 容器内的只读文件路径，不是浏览器本地路径，也不能填写私钥正文。保存后使用“测试连接”验证。不要关闭主机指纹校验来绕过配置错误。
+
+- id: ssh_credential_missing
+  title: 运行容器中缺少 SSH 私钥
+  summary: Connection 已登记私钥路径，但执行命令的容器中不存在该文件。
+  tags: [ssh, credential, docker, secret]
+  content: |
+    先确认宿主机密钥文件存在，再确认 docker-compose.yml 已把它以只读方式挂载到 Backend 和 Worker，并且 Connection 的私钥引用填写的是容器内路径。修改挂载后需要重新创建 Backend 和 Worker 容器；仅重启目标业务项目不能修复 Ops Agent 自身缺少密钥的问题。不要把私钥提交到 Git 或通过网页上传正文。
+
+- id: ssh_credential_unreadable
+  title: SSH 私钥存在但不可读
+  summary: 容器能看到私钥路径，但运行用户没有读取权限或文件格式不可用。
+  tags: [ssh, credential, permission]
+  content: |
+    在容器内检查文件是否可读，并核对宿主机权限、Compose secret 或 bind mount 的属主和模式。私钥文件通常应限制为仅服务账户可读。不要通过放宽为全局可读来长期解决权限问题。
+
+- id: ssh_authentication_failed
+  title: SSH 身份验证失败
+  summary: 网络和主机身份检查已到达目标，但用户名与私钥未被目标服务器接受。
+  tags: [ssh, authentication, authorized_keys]
+  content: |
+    核对 Connection 中的 SSH 用户、对应私钥以及目标用户 ~/.ssh/authorized_keys。确认公钥安装在目标用户而不是其他账户，并检查 sshd 是否允许公钥认证。不要改用密码写入项目配置，也不要关闭安全校验。
+
+- id: ssh_host_key_mismatch
+  title: SSH 主机指纹不一致
+  summary: 目标服务器返回的 Host Key 与 Connection 登记值不同，系统已停止连接。
+  tags: [ssh, host-key, fingerprint, security]
+  content: |
+    这可能是服务器重装、IP 指向变化，也可能是中间人攻击。先通过可信渠道在目标服务器上读取实际公钥指纹，确认主机身份和变更原因；确认无误后再更新 Connection 的 Host Key 指纹并测试连接。不得关闭严格主机校验继续执行。
+
+- id: ssh_connection_timeout
+  title: SSH 连接超时
+  summary: 在连接截止时间内未能与目标 SSH 服务建立连接。
+  tags: [ssh, timeout, network, firewall]
+  content: |
+    检查目标地址和端口、路由、防火墙、安全组、VPN 以及 sshd 是否监听。连接超时通常表示请求没有及时到达或没有响应，与“身份验证失败”不同，暂时不要轮换密钥。
+
+- id: ssh_connection_failed
+  title: SSH 连接失败
+  summary: SSH 建连失败，但错误不属于已单独识别的超时、认证或主机指纹问题。
+  tags: [ssh, network, connection]
+  content: |
+    先检查错误证据中的安全摘要，再检查 DNS、地址、端口、sshd 状态和协议协商。不要仅凭这一通用错误认定目标服务本身已停止；目标业务服务状态需要在恢复 SSH 后重新读取。
+
+- id: ssh_command_timeout
+  title: SSH 命令执行超时
+  summary: SSH 已连接，但远程命令在规定时间内没有完成。
+  tags: [ssh, command, timeout, execution-unknown]
+  content: |
+    超时不等于命令一定没有执行。对于变更操作，应把结果视为未知，先通过独立只读检查确认目标当前状态，再决定是否重试。不得自动重放可能已经生效的变更命令。

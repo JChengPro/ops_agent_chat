@@ -1,6 +1,6 @@
 # 最终架构实现状态
 
-基线：`main@4103be68fdd8d55bb33419e84fd9c8381cb968ef` 加当前未提交实现，2026-07-16。
+基线：`main@3c8c46c5b3d4ccaf99a85633328988513bf741ba` 加当前未提交实现，2026-09-03。
 
 ## 核心链路
 
@@ -9,6 +9,7 @@ React 提交消息和 client_request_id
 → FastAPI 创建 queued AgentRun
 → Worker 原子领取并维护租约
 → LangGraph 获取项目、环境、Context 和 verified Experience
+→ 可选 Skill 选择处理 SOP，并与现有 Capability 做权限交集
 → LLM 输出结构化 Decision
 → Registry 按 name/version/definition hash 解析 Capability
 → Policy 校验角色、范围、风险和审批模式
@@ -42,10 +43,10 @@ React 提交消息和 client_request_id
 
 | 等级 | 能力 | 依据 |
 |---|---|---|
-| Stable 候选 | 认证、项目/环境/连接/会话、异步 Run API、结构化 Decision Schema、Registry 编译 | 入口和回归测试存在，当前工作区仍需全量后端验收 |
-| Beta | LangGraph 调查、Docker 读与变更、Approval、Context/Experience、Evidence/Claim/Audit、React 工作台 | 代码链完整，但当前 Commit 的全量后端、迁移和真实 E2E 尚未完成 |
+| Stable 候选 | 认证、项目/环境/连接/会话、异步 Run API、结构化 Decision Schema、Registry 编译 | 入口和回归测试存在，当前工作区仍需数据库全量后端验收 |
+| Beta | LangGraph 调查、Skill 选择、Docker 读与变更、稳定窗口验证、Approval、Context、项目文档混合检索、系统知识、Evidence/Claim/Audit、React 工作台 | 静态与无数据库回归通过，数据库和真实 Runtime 尚需验收 |
 | Experimental | Kubernetes、systemd、Host 和注册配置/部署的真实执行 | 有确定性实现和测试代码，缺隔离目标环境验收 |
-| Planned | 向量经验检索优化、Kubernetes/systemd 测试环境产品化 | 不影响当前主链，不作为已实现能力宣传 |
+| Planned | 检索重排器、文档审核闭环、Kubernetes/systemd 测试环境产品化 | 不影响当前主链，不作为已实现能力宣传 |
 
 ## 当前发布边界
 
@@ -58,10 +59,10 @@ React 提交消息和 client_request_id
 
 实现缺失与环境阻塞必须区分。当前没有已知 P0 代码设计缺口，但以下测试尚未在本执行环境完成：
 
-1. 三次新迁移的空库升级、降级和再次升级。
-2. 后端全量 pytest、覆盖率、Ruff 与 mypy。
+1. 两次新迁移的空库升级、降级和再次升级。
+2. 依赖 PostgreSQL 的后端全量 pytest 与覆盖率。
 3. 真实 Docker Compose start/stop/restart/scale/unhealthy 矩阵。
-4. API 连接的浏览器 E2E。
+4. API 连接的浏览器 E2E；静态浏览器烟雾 E2E 已通过。
 5. Kubernetes、systemd 和真实外部 LLM 验收。
 
 权威测试状态见 `test-results/10-final-report.md`，不得仅依据本文件宣称发布通过。

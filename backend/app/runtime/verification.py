@@ -3,6 +3,25 @@ from typing import Any
 
 
 STOPPED_STATES = {"exited", "stopped", "dead", "created"}
+STABILIZED_CAPABILITIES = {
+    "service.start",
+    "service.stop",
+    "service.restart",
+    "service.scale",
+    "deployment.apply_registered",
+}
+
+
+def verification_window(
+    capability_name: str,
+    *,
+    max_attempts: int,
+    required_consecutive: int,
+) -> tuple[int, int]:
+    if capability_name not in STABILIZED_CAPABILITIES:
+        return 1, 1
+    required = min(max_attempts, required_consecutive)
+    return max_attempts, max(1, required)
 
 
 def parse_json_records(raw: object) -> tuple[list[dict[str, Any]], bool]:

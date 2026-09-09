@@ -1,0 +1,118 @@
+{
+  "evaluator": "system-knowledge-lexical-v1",
+  "eligible_case_count": 8,
+  "metrics": {
+    "source_recall_at_3": 1.0,
+    "mean_reciprocal_rank": 0.9375,
+    "hits": 8,
+    "misses": 0
+  },
+  "cases": [
+    {
+      "id": "sys-001",
+      "expected_ids": [
+        "ssh_credential_not_configured"
+      ],
+      "retrieved_ids": [
+        "ssh_connection_failed",
+        "ssh_credential_not_configured",
+        "ssh_connection_timeout"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "sys-002",
+      "expected_ids": [
+        "ssh_credential_missing"
+      ],
+      "retrieved_ids": [
+        "ssh_credential_missing",
+        "ssh_credential_unreadable",
+        "ssh_connection_failed"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "sys-003",
+      "expected_ids": [
+        "ssh_credential_missing",
+        "ssh_credential_unreadable"
+      ],
+      "retrieved_ids": [
+        "ssh_credential_missing",
+        "ssh_credential_not_configured",
+        "ssh_credential_unreadable"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "sys-004",
+      "expected_ids": [
+        "ssh_authentication_failed"
+      ],
+      "retrieved_ids": [
+        "ssh_authentication_failed",
+        "ssh_connection_failed",
+        "ssh_command_timeout"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "sys-005",
+      "expected_ids": [
+        "ssh_host_key_mismatch"
+      ],
+      "retrieved_ids": [
+        "ssh_host_key_mismatch",
+        "ssh_credential_not_configured",
+        "ssh_connection_failed"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "sys-006",
+      "expected_ids": [
+        "ssh_connection_failed",
+        "ssh_connection_timeout"
+      ],
+      "retrieved_ids": [
+        "ssh_connection_failed",
+        "ssh_connection_timeout"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "sys-007",
+      "expected_ids": [
+        "ssh_command_timeout"
+      ],
+      "retrieved_ids": [
+        "ssh_command_timeout",
+        "ssh_connection_timeout",
+        "ssh_credential_missing"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "sys-008",
+      "expected_ids": [
+        "policy:capability-boundary",
+        "ssh_credential_missing"
+      ],
+      "retrieved_ids": [
+        "ssh_credential_missing",
+        "ssh_credential_not_configured",
+        "ssh_authentication_failed"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    }
+  ]
+}

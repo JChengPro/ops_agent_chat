@@ -1,0 +1,29 @@
+{
+  "version": "candidate-v1",
+  "sources": [
+    {"source_id": "project:videohub:readme", "scope": "project_document", "path": "docs/knowledge/videohub/README.md"},
+    {"source_id": "project:videohub:deployment", "scope": "project_document", "path": "docs/knowledge/videohub/deployment.md"},
+    {"source_id": "project:videohub:compose-ops", "scope": "project_document", "path": "docs/knowledge/videohub/docker-compose-ops.md"},
+    {"source_id": "project:videohub:troubleshooting", "scope": "project_document", "path": "docs/knowledge/videohub/troubleshooting.md"},
+    {"source_id": "system:error:ssh_credential_not_configured", "scope": "system_knowledge", "path": "backend/app/runtime/adapters/base.py"},
+    {"source_id": "system:error:ssh_credential_missing", "scope": "system_knowledge", "path": "backend/app/runtime/adapters/base.py"},
+    {"source_id": "system:error:ssh_credential_unreadable", "scope": "system_knowledge", "path": "backend/app/runtime/adapters/base.py"},
+    {"source_id": "system:error:ssh_authentication_failed", "scope": "system_knowledge", "path": "backend/app/runtime/adapters/base.py"},
+    {"source_id": "system:error:ssh_host_key_mismatch", "scope": "system_knowledge", "path": "backend/app/runtime/adapters/base.py"},
+    {"source_id": "system:error:ssh_connection_timeout", "scope": "system_knowledge", "path": "backend/app/runtime/adapters/base.py"},
+    {"source_id": "system:error:ssh_connection_failed", "scope": "system_knowledge", "path": "backend/app/runtime/adapters/base.py"},
+    {"source_id": "system:error:ssh_command_timeout", "scope": "system_knowledge", "path": "backend/app/runtime/transports/ssh.py"},
+    {"source_id": "runtime:service.list", "scope": "runtime", "capability": "service.list"},
+    {"source_id": "runtime:service.status", "scope": "runtime", "capability": "service.status"},
+    {"source_id": "runtime:service.logs", "scope": "runtime", "capability": "service.logs"},
+    {"source_id": "runtime:service.inspect", "scope": "runtime", "capability": "service.inspect"},
+    {"source_id": "runtime:http.health_check", "scope": "runtime", "capability": "http.health_check"},
+    {"source_id": "runtime:host.disk_usage", "scope": "runtime", "capability": "host.disk_usage"},
+    {"source_id": "runtime:host.memory_usage", "scope": "runtime", "capability": "host.memory_usage"},
+    {"source_id": "runtime:host.listening_ports", "scope": "runtime", "capability": "host.listening_ports"},
+    {"source_id": "policy:capability-boundary", "scope": "system_policy", "path": "backend/app/llm/gateway.py"},
+    {"source_id": "policy:approval-required", "scope": "system_policy", "path": "backend/app/capabilities/definitions/core.yml"},
+    {"source_id": "security:project-isolation", "scope": "security_contract"},
+    {"source_id": "security:verified-only", "scope": "security_contract", "path": "backend/app/experience/service.py"}
+  ]
+}

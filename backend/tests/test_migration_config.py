@@ -13,4 +13,4 @@ def test_alembic_script_location_is_independent_of_working_directory(
 
     scripts = ScriptDirectory.from_config(Config(str(config_path)))
 
-    assert scripts.get_current_head() == "b3f7a2c9d104"
+    assert scripts.get_current_head() == "f2c7d1a9e483"

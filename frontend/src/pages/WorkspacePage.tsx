@@ -1,8 +1,8 @@
 import { FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Activity, BadgeCheck, BookOpenText, ChevronRight, CircleAlert, CircleCheck, CircleHelp, Code2, Edit3, Folder, FolderOpen, LogOut, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Send, Server, Settings, StopCircle, ThumbsDown, ThumbsUp, Trash2, UserCircle, XCircle } from "lucide-react";
-import { cancelCollectorRun, cancelRun, collectContext, createConnection, createEnvironment, createExperience, createProject, createSession, decideApprovalBatch, deleteConnection, deleteEnvironment, deleteExperience, deleteProject, deleteSession, getRun, listActions, listCollectorRuns, listConnections, listEntities, listEnvironments, listEvidence, listExperience, listGeneralRuns, listGeneralSessions, listMessages, listMonitorEvents, listProjects, listRuns, listSessions, listSteps, queueMessage, sendFeedback, testEnvironmentConnection, updateConnection, updateEnvironment, updateExperience, updateProject, updateSession } from "../api/ops";
-import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, Entity, Environment, Evidence, ExperienceItem, MonitorEvent, Project, User } from "../api/types";
+import { cancelCollectorRun, cancelRun, collectContext, createConnection, createEnvironment, createExperience, createProject, createSession, decideApprovalBatch, deleteConnection, deleteEnvironment, deleteExperience, deleteProject, deleteSession, getRun, listActions, listCollectorRuns, listConnections, listEntities, listEnvironments, listEvidence, listExperience, listGeneralRuns, listGeneralSessions, listMessages, listMonitorEvents, listProjects, listRuns, listSessions, listSteps, listSystemKnowledge, queueMessage, sendFeedback, testEnvironmentConnection, updateConnection, updateEnvironment, updateExperience, updateProject, updateSession } from "../api/ops";
+import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, Entity, Environment, Evidence, ExperienceItem, MonitorEvent, Project, SystemKnowledgeItem, User } from "../api/types";
 import { ProjectConfigDialog, type ProjectConfigurationValue } from "../components/ProjectConfigDialog";
 import { ModelSettingsDialog } from "../components/ModelSettingsDialog";
 import { AccountSettingsDialog } from "../components/AccountSettingsDialog";
@@ -17,7 +17,7 @@ type ConfirmDialogState = {title:string;message:string;confirmLabel:string;onCon
 
 export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpdated:(user:User)=>void;onLogout:()=>void|Promise<void>}) {
   const [projects,setProjects]=useState<Project[]>([]), [sessions,setSessions]=useState<ChatSession[]>([]), [messages,setMessages]=useState<ChatMessage[]>([]);
-  const [environments,setEnvironments]=useState<Environment[]>([]), [connections,setConnections]=useState<Connection[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [entities,setEntities]=useState<Entity[]>([]), [collectorRuns,setCollectorRuns]=useState<CollectorRun[]>([]), [monitorEvents,setMonitorEvents]=useState<MonitorEvent[]>([]);
+  const [environments,setEnvironments]=useState<Environment[]>([]), [connections,setConnections]=useState<Connection[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [systemKnowledge,setSystemKnowledge]=useState<SystemKnowledgeItem[]>([]), [entities,setEntities]=useState<Entity[]>([]), [collectorRuns,setCollectorRuns]=useState<CollectorRun[]>([]), [monitorEvents,setMonitorEvents]=useState<MonitorEvent[]>([]);
   const [projectId,setProjectId]=useState<number|null>(null), [sessionId,setSessionId]=useState<number|null>(null), [input,setInput]=useState("");
   const [projectsReady,setProjectsReady]=useState(false);
   const [pendingRuns,setPendingRuns]=useState<Record<number,string>>({}), [cancellingRunId,setCancellingRunId]=useState<string|null>(null);
@@ -40,7 +40,7 @@ export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpd
   const sending=Boolean(backendActiveRun||pendingRun);
   const cancelling=Boolean(activeRunId&&cancellingRunId===activeRunId);
 
-  useEffect(()=>{void refreshProjects();},[]);
+  useEffect(()=>{void refreshProjects();void listSystemKnowledge().then(setSystemKnowledge).catch(error=>showNotice("error",error instanceof Error?error.message:"系统知识加载失败"));},[]);
   useEffect(()=>{
     if(!projectsReady)return;
     let disposed=false;
@@ -177,7 +177,7 @@ export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpd
     {!leftCollapsed&&<button className="pane-toggle pane-edge-control left-close" onClick={()=>setLeftCollapsed(true)} title="关闭左侧栏"><PanelLeftClose size={17}/></button>}
     {!rightCollapsed&&<button className="pane-toggle pane-edge-control right-close" onClick={()=>setRightCollapsed(true)} title="关闭右侧栏"><PanelRightClose size={17}/></button>}
     <aside className="glass-panel left-pane">
-      <div className="workspace-brand"><div className="brand-chip"><span>&gt;_</span></div><strong>Ops Agent Chat</strong></div>
+      <div className="workspace-brand"><div className="brand-chip"><img src="/ops-agent-logo.png" alt="" /></div><strong>Ops Agent Chat</strong></div>
       <button className="new-chat-primary" onClick={newSession}><Plus size={17}/>新增对话</button>
       <section className={`left-block project-block ${projects.length>3?"compact":""}`}><div className="block-title"><span>项目</span><button className="mini-create" onClick={newProject} title="新建项目"><Plus size={15}/>新建</button></div><div className="project-scroll">
         <div className={`nav-row ${projectId===null?"selected":""}`}><button className="project-item" onClick={()=>setProjectId(null)}><MessageSquare size={19}/><span>通用聊天</span></button></div>
@@ -194,9 +194,9 @@ export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpd
         {messages.map(m=><MessageView key={m.id} message={m} setRef={el=>{messageRefs.current[m.id]=el;}} onApproval={approve} approvalBusy={approvalBusy}/>) }{sending&&<div className="message assistant"><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="typing-line"><span/><span/><span/></div></div></div>}<div ref={endRef}/></div>
       <form className="composer" onSubmit={submit}><input ref={composerRef} value={input} onChange={e=>setInput(e.target.value)} placeholder="输入问题或描述要完成的任务" disabled={sending}/>{activeRunId?<button type="button" className="stop-run" onClick={stopRun} disabled={cancelling}><StopCircle size={18}/>{cancelling?"停止中":"停止"}</button>:<button disabled={sending}><Send size={18}/>发送</button>}</form>
     </section>
-    <aside className="glass-panel right-pane"><div className="right-pane-head"><div className="tabs"><button className={tab==="activity"?"active":""} onClick={()=>setTab("activity")}><Activity size={16}/>活动</button><button className={tab==="experience"?"active":""} onClick={()=>setTab("experience")}><BookOpenText size={16}/>经验</button><button className={tab==="config"?"active":""} onClick={()=>setTab("config")}><Settings size={16}/>配置</button></div></div>
+    <aside className="glass-panel right-pane"><div className="right-pane-head"><div className="tabs"><button className={tab==="activity"?"active":""} onClick={()=>setTab("activity")}><Activity size={16}/>活动</button><button className={tab==="experience"?"active":""} onClick={()=>setTab("experience")}><BookOpenText size={16}/>文档</button><button className={tab==="config"?"active":""} onClick={()=>setTab("config")}><Settings size={16}/>配置</button></div></div>
       {tab==="activity"&&<ActivityPanel runs={visibleRuns} monitorEvents={monitorEvents} onUseRecommendation={useMonitorRecommendation}/>}
-      {tab==="experience"&&(projectId?<ExperiencePanel items={experience} projectId={projectId} onChange={setExperience} onRequestDelete={(item,onDelete)=>requestConfirm("删除项目经验",`经验“${item.title}”将被删除。`,"删除经验",onDelete)}/>:<div className="side-card"><p className="empty-note">通用聊天不使用项目经验。</p></div>)}
+      {tab==="experience"&&<DocumentsPanel items={experience} systemItems={systemKnowledge} projectId={projectId} onChange={setExperience} onRequestDelete={(item,onDelete)=>requestConfirm("删除项目文档",`文档“${item.title}”将从项目文档列表和检索内容中移除。`,"删除文档",onDelete)}/>}
       {tab==="config"&&<ConfigPanel
         project={project}
         environment={activeEnvironment}
@@ -324,13 +324,83 @@ function ActivityPanel({runs,monitorEvents,onUseRecommendation}:{runs:AgentRun[]
   </div>;
 }
 function StatusDot({status}:{status:string}){return <i className={`status-dot ${status}`}/>}function goalOf(run:AgentRun){return String(run.request_json?.summary||run.request_json?.goal||"Agent 请求")}
-function stepLabel(value:string){return ({resolve_capabilities:"解析可用能力",decision:"模型决策",policy:"策略检查",execute:"工具执行",await_approval:"等待审批",finish:"生成结果"} as Record<string,string>)[value]||value;}
+function stepLabel(value:string){return ({resolve_capabilities:"解析可用能力",select_skill:"选择处理流程",decision:"模型决策",policy:"策略检查",execute:"工具执行",await_approval:"等待审批",finish:"生成结果"} as Record<string,string>)[value]||value;}
 function runErrorLabel(value?:string){return ({DECISION_FAILED:"模型决策失败",DECISION_INVALID:"模型执行计划未通过安全校验",MODEL_CALL_FAILED:"模型服务调用失败",RUN_TIMEOUT:"处理超时",WORKER_LEASE_EXPIRED:"Worker 心跳超时"} as Record<string,string>)[value||""]||value||"未知错误";}
 function monitorStatusLabel(value:string){return ({open:"需要处理",remediating:"正在自动修复",remediated:"已自动修复",resolved:"已恢复",remediation_failed:"自动修复失败"} as Record<string,string>)[value]||value;}
 function monitorSeverityLabel(value:string){return ({critical:"严重",warning:"警告",info:"信息"} as Record<string,string>)[value]||value;}
 function diagnosisStatusLabel(value?:string|null){return ({queued:"自动只读诊断已排队",running:"正在收集状态和日志",completed:"自动只读诊断已完成",failed:"自动只读诊断失败",cancelled:"自动只读诊断已取消"} as Record<string,string>)[value||""]||"正在准备自动只读诊断";}
 function runStepLabel(value:string){return ({queued_new:"等待处理",queued_resume:"等待恢复",starting:"开始处理",resuming:"恢复执行",finish:"已结束",queued:"等待处理",running:"处理中",waiting_for_approval:"等待审批",completed:"已完成",failed:"失败",cancelled:"已取消"} as Record<string,string>)[value]||value}function stepStatusLabel(value:string){return ({running:"处理中",success:"完成",failed:"失败",cancelled:"已取消"} as Record<string,string>)[value]||value}function actionStatusLabel(value:string){return ({proposed:"已提出",ready:"待执行",waiting_for_approval:"等待审批",approved:"已批准",executing:"执行中",succeeded:"执行成功",verified:"验证通过",failed:"执行失败",denied:"已拒绝",needs_clarification:"需要补充信息",precheck_failed:"前置检查失败",precheck_changed:"执行前状态已变化",rejected:"审批已拒绝",expired:"审批已过期",cancelled:"已取消",approval_invalid:"审批已失效",verification_failed:"验证失败",rolled_back:"已恢复",rollback_failed:"恢复失败",execution_unknown:"执行结果未知"} as Record<string,string>)[value]||value}
-function ExperiencePanel({items,projectId,onChange,onRequestDelete}:{items:ExperienceItem[];projectId:number;onChange:(x:ExperienceItem[])=>void;onRequestDelete:(item:ExperienceItem,onDelete:()=>Promise<void>)=>void}){const [saving,setSaving]=useState(false);async function upload(file?:File){if(!file)return;setSaving(true);try{const content=await file.text();const row=await createExperience(projectId,{title:file.name,content,trust_status:"draft",tags:["uploaded"]});onChange([row,...items]);}finally{setSaving(false)}}async function verify(item:ExperienceItem){const row=await updateExperience(item.id,{trust_status:"verified"});onChange(items.map(x=>x.id===row.id?row:x))}function remove(item:ExperienceItem){onRequestDelete(item,async()=>{await deleteExperience(item.id);onChange(items.filter(x=>x.id!==item.id));});}return <div className="side-card"><h3>项目经验</h3><label className="upload-line"><input type="file" accept=".md,.txt" onChange={e=>upload(e.target.files?.[0])}/><span>{saving?"保存中":"添加文档"}</span></label>{items.map(x=><div className="doc-row" key={x.id}><span><strong>{x.title}</strong><small>{x.trust_status==="verified"?"已验证":"草稿"} · {x.item_type}</small></span><div>{x.trust_status!=="verified"&&<button className="icon-action" onClick={()=>verify(x)} title="标记为已验证"><BadgeCheck size={15}/></button>}<button className="icon-action" onClick={()=>remove(x)} title="删除经验"><Trash2 size={15}/></button></div></div>)}</div>}
+function DocumentPreviewDialog({item,onClose}:{item:ExperienceItem;onClose:()=>void}){
+  return createPortal(<div className="dialog-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}>
+    <section className="document-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="document-preview-title">
+      <header className="dialog-header"><div><h2 id="document-preview-title">{item.title}</h2><p>{item.trust_status==="verified"?"已验证，可供 Agent 检索":"草稿，暂不参与 Agent 检索"}{item.updated_at?` · 更新于 ${new Date(item.updated_at).toLocaleString()}`:""}</p></div><button className="dialog-close" onClick={onClose} aria-label="关闭"><XCircle size={18}/></button></header>
+      <div className="document-preview-content"><pre className="document-raw-content">{item.content}</pre></div>
+      <footer className="dialog-actions"><button onClick={onClose}>关闭</button></footer>
+    </section>
+  </div>,document.body);
+}
+
+function SystemKnowledgePreviewDialog({item,onClose}:{item:SystemKnowledgeItem;onClose:()=>void}){
+  return createPortal(<div className="dialog-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}>
+    <section className="document-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="system-knowledge-preview-title">
+      <header className="dialog-header"><div><h2 id="system-knowledge-preview-title">{item.title}</h2><p>系统内置知识 · 只读</p></div><button className="dialog-close" onClick={onClose} aria-label="关闭"><XCircle size={18}/></button></header>
+      <div className="document-preview-content"><pre className="document-raw-content">{item.content}</pre></div>
+      <footer className="dialog-actions"><button onClick={onClose}>关闭</button></footer>
+    </section>
+  </div>,document.body);
+}
+
+function DocumentsPanel({items,systemItems,projectId,onChange,onRequestDelete}:{items:ExperienceItem[];systemItems:SystemKnowledgeItem[];projectId:number|null;onChange:(x:ExperienceItem[])=>void;onRequestDelete:(item:ExperienceItem,onDelete:()=>Promise<void>)=>void}){
+  const [saving,setSaving]=useState(false),[error,setError]=useState(""),[selected,setSelected]=useState<ExperienceItem|null>(null),[selectedSystem,setSelectedSystem]=useState<SystemKnowledgeItem|null>(null);
+  const projectDocumentsCrowded=items.length>4;
+  async function upload(file?:File){
+    if(!file||projectId===null)return;
+    setSaving(true);setError("");
+    try{
+      const content=await file.text();
+      if(!content.trim())throw new Error("文档内容不能为空");
+      const row=await createExperience(projectId,{title:file.name,content,trust_status:"draft",tags:["uploaded"]});
+      onChange([row,...items]);
+    }catch(value){setError(value instanceof Error?value.message:"上传文档失败");}
+    finally{setSaving(false);}
+  }
+  async function verify(item:ExperienceItem){
+    setError("");
+    try{
+      const row=await updateExperience(item.id,{trust_status:"verified"});
+      onChange(items.map(x=>x.id===row.id?row:x));
+      if(selected?.id===row.id)setSelected(row);
+    }catch(value){setError(value instanceof Error?value.message:"验证文档失败");}
+  }
+  function remove(item:ExperienceItem){
+    onRequestDelete(item,async()=>{
+      await deleteExperience(item.id);
+      onChange(items.filter(x=>x.id!==item.id));
+      if(selected?.id===item.id)setSelected(null);
+    });
+  }
+  return <div className={`side-card document-panel ${projectId===null?"system-only":""}`}>
+    {projectId!==null&&<section className={`document-section project-document-section ${projectDocumentsCrowded?"crowded":"compact"}`} aria-label="项目文档">
+      <div className="document-section-title"><div><h3>项目文档</h3><span>{items.length} 份</span></div><label className="upload-line"><input type="file" accept=".md,.txt,text/markdown,text/plain" disabled={saving} onChange={event=>{const file=event.target.files?.[0];event.target.value="";void upload(file);}}/><Plus size={15}/><span>{saving?"上传中...":"上传文档"}</span></label></div>
+      <p className="document-panel-note">支持 Markdown 和纯文本。草稿需验证后才可供 Agent 检索。</p>
+      {error&&<p className="document-panel-error">{error}</p>}
+      <div className="project-document-scroll">{items.length===0&&<p className="empty-note">当前项目还没有文档。</p>}
+        {items.map(item=><div className="doc-row" key={item.id}>
+          <button className="document-open" onClick={()=>setSelected(item)} title={`查看 ${item.title}`}><BookOpenText size={17}/><span><strong>{item.title}</strong><small>{item.trust_status==="verified"?"已验证，可检索":"草稿，待验证"}</small></span></button>
+          <div className="document-actions">{item.trust_status!=="verified"&&<button className="icon-action" onClick={()=>void verify(item)} title="验证并允许 Agent 检索" aria-label={`验证文档 ${item.title}`}><BadgeCheck size={16}/></button>}<button className="document-delete" onClick={()=>remove(item)} title="删除文档"><Trash2 size={15}/><span>删除</span></button></div>
+        </div>)}
+      </div>
+    </section>}
+    <section className="document-section system-knowledge-section" aria-label="系统内置知识库">
+      <div className="document-section-title"><div><h3>系统内置知识库</h3><span>{systemItems.length} 份</span></div><em>只读</em></div>
+      <div className="system-knowledge-scroll">{systemItems.length===0&&<p className="empty-note">系统内置知识库尚未配置。</p>}
+        {systemItems.map(item=><div className="doc-row system-doc-row" key={item.id}><button className="document-open" onClick={()=>setSelectedSystem(item)} title={`查看 ${item.title}`}><BookOpenText size={17}/><span><strong>{item.title}</strong><small>{item.summary}</small></span></button></div>)}
+      </div>
+    </section>
+    {selected&&<DocumentPreviewDialog item={selected} onClose={()=>setSelected(null)}/>}
+    {selectedSystem&&<SystemKnowledgePreviewDialog item={selectedSystem} onClose={()=>setSelectedSystem(null)}/>}
+  </div>;
+}
 function ConfigPanel({project,environment,environments,connections,canManage,entities,collectorRuns,onCollect,onCancel,onDeleteEnvironment,onTestConnection,onConfigure}:{project:Project|null;environment:Environment|null;environments:Environment[];connections:Connection[];canManage:boolean;entities:Entity[];collectorRuns:CollectorRun[];onCollect:()=>Promise<void>;onCancel:(id:number)=>Promise<void>;onDeleteEnvironment:(item:Environment)=>Promise<void>;onTestConnection:(environmentId:number)=>Promise<void>;onConfigure:(item:Environment|null)=>void}){
   const active=collectorRuns.some(item=>item.status==="queued"||item.status==="running"),connection=connections.find(item=>item.id===environment?.connection_id)||null;
   if(!project)return <div className="side-card"><p className="empty-note">请选择项目。</p></div>;

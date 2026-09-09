@@ -12,7 +12,7 @@ from app.models.action import CapabilityVersion
 
 
 class CapabilityRegistry:
-    EXECUTORS = {"context", "experience", "runtime", "registered_deployment", "registered_config"}
+    EXECUTORS = {"context", "experience", "system_knowledge", "runtime", "registered_deployment", "registered_config"}
     RUNTIMES = {"manual", "docker_compose", "kubernetes", "systemd", "mixed"}
 
     def __init__(self, definitions_path: Path | None = None) -> None:
@@ -92,6 +92,9 @@ class CapabilityRegistry:
         if definition is None or (version is not None and definition.version != version):
             return None
         return definition
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._definitions)
 
     def definition_hash(self, name: str, version: str) -> str | None:
         return self._definition_hashes.get((name, version))

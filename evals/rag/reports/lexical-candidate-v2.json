@@ -1,0 +1,241 @@
+{
+  "evaluator": "candidate-multilingual-lexical-v2",
+  "eligible_case_count": 15,
+  "metrics": {
+    "source_recall_at_5": 1.0,
+    "mean_reciprocal_rank": 0.8555555555555556,
+    "hits": 15,
+    "misses": 0
+  },
+  "limitations": [
+    "This offline run evaluates lexical retrieval only; configured vector retrieval must be measured against PostgreSQL.",
+    "The four-document sample is too small to establish production precision."
+  ],
+  "cases": [
+    {
+      "id": "proj-001",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:readme",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-002",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "proj-003",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "proj-004",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:readme",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-005",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 3
+    },
+    {
+      "id": "proj-006",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:troubleshooting",
+        "project:videohub:compose-ops",
+        "project:videohub:readme",
+        "project:videohub:deployment"
+      ],
+      "hit": true,
+      "first_relevant_rank": 2
+    },
+    {
+      "id": "proj-007",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:compose-ops",
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-008",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:compose-ops"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting",
+        "project:videohub:readme",
+        "project:videohub:deployment"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-009",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:troubleshooting",
+        "project:videohub:readme",
+        "project:videohub:compose-ops",
+        "project:videohub:deployment"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-010",
+      "split": "holdout",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:troubleshooting",
+        "project:videohub:readme",
+        "project:videohub:deployment"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-011",
+      "split": "holdout",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:troubleshooting",
+        "project:videohub:readme",
+        "project:videohub:deployment"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "proj-012",
+      "split": "holdout",
+      "expected_source_ids": [
+        "project:videohub:troubleshooting"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:troubleshooting",
+        "project:videohub:compose-ops",
+        "project:videohub:readme",
+        "project:videohub:deployment"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "multi-001",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:readme"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "multi-005",
+      "split": "dev",
+      "expected_source_ids": [
+        "project:videohub:compose-ops",
+        "project:videohub:deployment"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:deployment",
+        "project:videohub:compose-ops",
+        "project:videohub:troubleshooting",
+        "project:videohub:readme"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    },
+    {
+      "id": "multi-008",
+      "split": "holdout",
+      "expected_source_ids": [
+        "project:videohub:readme"
+      ],
+      "retrieved_source_ids": [
+        "project:videohub:readme",
+        "project:videohub:deployment",
+        "project:videohub:troubleshooting",
+        "project:videohub:compose-ops"
+      ],
+      "hit": true,
+      "first_relevant_rank": 1
+    }
+  ]
+}

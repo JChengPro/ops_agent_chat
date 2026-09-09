@@ -142,6 +142,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "relationship.dependencies": "查询服务依赖",
   "relationship.impact": "分析故障影响",
   "experience.search": "检索项目经验",
+  "system.knowledge.search": "检索系统知识",
   "service.list": "列出服务状态",
   "service.status": "检查服务状态",
   "service.inspect": "查看服务详情",

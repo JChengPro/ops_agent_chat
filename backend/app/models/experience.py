@@ -1,8 +1,9 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, JSON, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
 
 from app.core.database import Base
 
@@ -33,12 +34,19 @@ class ExperienceItem(Base):
 
 class ExperienceChunk(Base):
     __tablename__ = "experience_chunks"
+    __table_args__ = (UniqueConstraint("experience_item_id", "chunk_key", name="uq_experience_chunk_key"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     experience_item_id: Mapped[int] = mapped_column(ForeignKey("experience_items.id", ondelete="CASCADE"), index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    chunk_key: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    source_ref: Mapped[str] = mapped_column(String(1000))
+    heading_path: Mapped[list[str]] = mapped_column(JSON, default=list)
+    chunk_index: Mapped[int] = mapped_column()
     content: Mapped[str] = mapped_column(Text)
     search_text: Mapped[str] = mapped_column(Text)
     embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -9,6 +9,7 @@ from sqlalchemy.engine import make_url
 os.environ.setdefault("APP_SECRET_KEY", "test-secret-key-with-more-than-32-characters")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-placeholder-key")
 os.environ.setdefault("SSH_STRICT_HOST_KEY_CHECKING", "true")
+os.environ.setdefault("VERIFICATION_INTERVAL_SECONDS", "0")
 
 
 default_database_host = "postgres" if Path("/app").exists() else "127.0.0.1"

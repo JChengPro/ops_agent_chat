@@ -85,8 +85,8 @@ svg { color: currentColor; stroke-width: 2; opacity: 1; }
 .brand-mark, .brand-chip {
   display: grid;
   place-items: center;
-  color: #fff;
-  background: #202123;
+  overflow: hidden;
+  background: transparent;
 }
 
 .brand-mark {
@@ -96,14 +96,12 @@ svg { color: currentColor; stroke-width: 2; opacity: 1; }
   border-radius: 14px;
 }
 
-.brand-mark span, .brand-chip span {
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: 0;
+.brand-mark img, .brand-chip img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
-
-.brand-mark span { font-size: 22px; }
-.brand-chip span { font-size: 17px; }
 
 .login-panel h1 {
   text-align: center;
@@ -480,6 +478,7 @@ svg { color: currentColor; stroke-width: 2; opacity: 1; }
   gap: 10px;
   padding: 9px 10px;
   transition: background .15s ease, color .15s ease;
+  font-size: 13px;
   font-weight: 400;
 }
 
@@ -1238,14 +1237,19 @@ code {
 .message-nav-row.assistant strong { color: var(--muted); }
 
 .upload-line {
-  display: block;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  padding: 12px;
-  margin: 4px 6px 14px;
+  border-radius: 8px;
+  padding: 0 10px;
+  margin: 0;
   color: var(--text);
   cursor: pointer;
   font-weight: 500;
+  font-size: 12px;
   background: var(--surface);
 }
 
@@ -1991,10 +1995,36 @@ code {
 .evidence-detail pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; border-radius: 8px; background: var(--code-bg); color: var(--text); }
 .evidence-detail em { color: var(--subtle); font-style: normal; }
 .answer-number { padding-left: 4px; }
-.doc-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-.doc-row > span { display: grid; gap: 4px; min-width: 0; }
-.doc-row > span strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); }
-.doc-row > div { display: flex; gap: 3px; }
+.document-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden !important; }
+.document-section { min-height: 0; }
+.document-section + .document-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-strong); }
+.document-section-title { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 6px 8px; }
+.document-section-title > div { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.document-section-title h3 { margin: 0; color: var(--text-strong); font-size: 13px; }
+.document-section-title > div > span { color: var(--subtle); font-size: 10px; }
+.document-section-title > em { flex: 0 0 auto; border-radius: 999px; padding: 3px 7px; background: var(--surface-muted); color: var(--muted); font-size: 10px; font-style: normal; }
+.project-document-section { flex: 0 1 auto; max-height: 50%; display: flex; flex-direction: column; }
+.project-document-section.crowded { flex: 0 0 50%; height: 50%; }
+.project-document-scroll, .system-knowledge-scroll { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.project-document-scroll { flex: 0 1 auto; }
+.project-document-section.crowded .project-document-scroll { flex: 1 1 auto; }
+.system-knowledge-section { flex: 1 1 auto; display: flex; flex-direction: column; }
+.system-knowledge-scroll { flex: 1 1 auto; }
+.document-panel.system-only .system-knowledge-section { margin-top: 0; padding-top: 0; border-top: 0; }
+.document-panel-note { margin: 0 6px 10px; line-height: 1.55; }
+.document-panel-note { color: var(--muted); font-size: 11px; font-weight: 400; }
+.document-panel-error { margin: 0 6px 10px; color: var(--danger); font-size: 12px; line-height: 1.5; }
+.doc-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 8px 6px; }
+.system-doc-row { grid-template-columns: minmax(0, 1fr); }
+.document-open { min-width: 0; min-height: 42px; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 5px 7px; background: transparent; color: var(--muted); text-align: left; }
+.document-open:hover { background: var(--surface-hover); color: var(--text-strong); }
+.document-open > span { min-width: 0; display: grid; gap: 4px; }
+.document-open strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-size: 13px; font-weight: 500; }
+.document-open small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.document-actions { display: flex; align-items: center; gap: 3px; }
+.document-delete { min-height: 30px; display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 7px; padding: 0 7px; background: transparent; color: var(--danger); font-size: 11px; }
+.document-delete span { color: inherit; }
+.document-delete:hover { background: var(--danger-bg); color: var(--danger); }
 
 .config-heading { display: flex; align-items: center; justify-content: space-between; }
 .config-heading > div:first-child { min-width: 0; display: grid; gap: 2px; }
@@ -2004,7 +2034,7 @@ code {
 .config-edit-button, .config-add-button { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-strong); border-radius: 8px; padding: 0 9px; background: var(--surface); color: var(--text-strong); font-size: 12px; font-weight: 500; }
 .config-edit-button:hover, .config-add-button:hover { background: var(--surface-hover); }
 .config-list p { grid-template-columns: 92px minmax(0,1fr); align-items: start; }
-.config-list p strong { min-width: 0; overflow-wrap: anywhere; color: var(--text-strong); font-weight: 400; }
+.config-list p strong { min-width: 0; overflow-wrap: anywhere; color: var(--text-strong); font-size: 13px; font-weight: 400; line-height: 1.45; }
 .collector-list { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
 .collector-list h4 { margin: 0 6px 8px; color: var(--text-strong); font-size: 13px; }
 .collector-row { min-height: 48px; display: grid; grid-template-columns: 9px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 7px 6px; border-top: 1px solid var(--border); }
@@ -2030,6 +2060,7 @@ code {
 .project-config-dialog,
 .model-settings-dialog,
 .account-settings-dialog,
+.document-preview-dialog,
 .small-dialog {
   width: min(980px, calc(100vw - 40px));
   max-height: min(860px, calc(100vh - 48px));
@@ -2044,6 +2075,9 @@ code {
 }
 .model-settings-dialog { width: min(560px, calc(100vw - 32px)); }
 .account-settings-dialog { width: min(760px, calc(100vw - 32px)); }
+.document-preview-dialog { width: min(780px, calc(100vw - 32px)); }
+.document-preview-content { min-height: 220px; padding: 22px 24px 32px; overflow: auto; }
+.document-raw-content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); background: transparent; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 13px; line-height: 1.7; }
 .account-settings-layout { min-height: 460px; display: grid; grid-template-columns: 190px minmax(0,1fr); }
 .account-settings-layout > nav { display: grid; align-content: start; gap: 4px; padding: 16px 12px; border-right: 1px solid var(--border); background: var(--surface-muted); }
 .account-settings-layout > nav button { min-height: 40px; display: flex; align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 0 11px; background: transparent; color: var(--muted); text-align: left; }

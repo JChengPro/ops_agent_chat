@@ -14,6 +14,7 @@ class AgentState(TypedDict, total=False):
     monitor_event_id: str | None
     context: dict[str, Any]
     capabilities: list[dict[str, Any]]
+    selected_skill: dict[str, Any] | None
     decision: dict[str, Any]
     pending_calls: list[dict[str, Any]]
     action_ids: list[str]

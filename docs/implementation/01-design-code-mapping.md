@@ -1,6 +1,6 @@
 # 设计与代码映射
 
-基线：`main@4103be68fdd8d55bb33419e84fd9c8381cb968ef`，包含当前未提交的 Capability 精确绑定修改。
+基线：`main@3c8c46c5b3d4ccaf99a85633328988513bf741ba`，包含当前未提交的 Skills、RAG 和稳定验证实现。
 
 | 设计模块 | 设计要求 | 当前代码位置 | 当前实现状态 | 复用判断 | 存在问题 | 处理方式 | 对应测试 |
 |---|---|---|---|---|---|---|---|
@@ -13,14 +13,16 @@
 | AgentRun | 正式状态、原子领取、终态不可逆 | `models/agent.py`、`agent/service.py`、`agent/status.py` | COMPLETE | Worker/lease 保留 | 状态值、原子领取、租约恢复和未知执行均有确定规则 | KEEP | 并发、非法转换、异常测试 |
 | LangGraph | 结构化单 Agent、审批暂停恢复 | `agent/graph.py` | COMPLETE | 主图保留 | 真实 LLM/SSH 链尚待目标环境验收 | TEST_ONLY | Graph 集成 |
 | Context | 来源可追踪实体和关系 | `context/`、`models/context.py` | COMPLETE | 查询和 Collector 保留 | Collector 已异步入队；真实慢 SSH 仍需验收 | TEST_ONLY | 关系、Collector job 测试 |
-| Experience Retrieval | verified 内容辅助检索 | `experience/service.py` | COMPLETE | 分块和检索保留 | 已限制 trust 状态，修改后降级，删除归档 | KEEP | trust、检索、Claim Link 测试 |
+| Skill Registry | 可选 SOP、版本 Hash、只收窄能力、失败回退 | `skills/`、`agent/graph.py`、`llm/gateway.py` | COMPLETE | ADD | 真实模型选择质量尚未验收 | TEST_ONLY | `test_skills.py`、Graph 集成 |
+| Experience Retrieval | verified 内容辅助检索、项目隔离、稳定分块、混合召回 | `experience/chunking.py`、`experience/service.py`、`embeddings/` | COMPLETE | MODIFY | 真实 Embedding API 和大语料质量尚未验收 | TEST_ONLY | 分块、混合检索、RAG 评测 |
+| System Knowledge | 开发者维护、用户只读、只提供安全指导 | `system_knowledge/`、`api/system_knowledge.py` | COMPLETE | ADD | 当前仅覆盖 SSH 常见错误，需按问题扩充 | MODIFY | `test_system_knowledge.py`、离线评测 |
 | Capability Registry | Schema、编译、精确三元组 | `capabilities/` | COMPLETE | 当前实现保留 | 需持续漂移测试 | KEEP | Registry 单元/Graph 回归 |
 | Capability Definition | 有界参数、precheck/verifier/rollback | `definitions/core.yml` | COMPLETE | 可原样复用 | 真实运行时成熟度不同 | KEEP | Registry 编译 |
 | Policy Engine | 角色、范围、风险、审批 | `policy/engine.py`、`policy/action_hash.py` | COMPLETE | 规则主体保留 | 决策版本、风险和审批模式已冻结并在恢复前复核 | KEEP | Policy 与 Hash 负向测试 |
 | Action | 最终不可变执行和治理快照 | `models/action.py`、`agent/graph.py` | COMPLETE | 当前模型保留 | 快照覆盖执行配方、关联能力和治理语义 | KEEP | Action Hash、审批漂移测试 |
 | Action Hash | 覆盖全部执行语义 | `policy/action_hash.py` | COMPLETE | 哈希函数保留 | 规范化 Hash 覆盖配置修订、Policy、风险、审批和回滚 | KEEP | 任一字段变化测试 |
 | Approval | 唯一 Hash、一次决定、过期/批次收尾 | `api/approvals.py`、`agent/status.py` | COMPLETE | CAS 保留 | 批次拒绝、过期、取消和失效会统一收尾 | KEEP | 并发、批次、过期测试 |
-| Verification | 真实最终状态、fail closed | `runtime/verification.py`、`agent/graph.py`、Adapters | COMPLETE | 专用解析器保留 | Docker/Kubernetes/systemd 严格解析；后两者真实环境未验收 | TEST_ONLY | verifier 参数化负向测试 |
+| Verification | 真实最终状态、稳定窗口、fail closed | `runtime/verification.py`、`agent/graph.py`、Adapters | COMPLETE | 专用解析器保留并扩展 | 状态变更要求连续成功；Docker/Kubernetes/systemd 真实环境未验收 | TEST_ONLY | verifier 参数化负向测试、`test_verification_window.py` |
 | Runtime Adapter | 确定性 argv/HTTP/文件操作 | `runtime/adapters/` | PARTIAL | 结构可复用 | 各运行时真实验收不同 | MODIFY | Adapter 单元和真实集成 |
 | SSH Transport | 指纹、超时、取消、输出限制 | `runtime/transports/ssh.py` | COMPLETE | 可原样复用 | 需隔离 SSH 真实矩阵 | TEST_ONLY | 安全边界、SSH 集成 |
 | Docker Compose | 读、start/stop/restart/scale | `runtime/adapters/docker.py`、`runtime/verification.py` | COMPLETE | argv 和 verifier 保留 | 真实 Compose 测试代码已补，当前沙箱未运行 | TEST_ONLY | Docker 单元/真实 Compose |
@@ -38,9 +40,9 @@
 | 前端聊天 | 乐观消息、轮询、自动滚动、会话/环境隔离 | `WorkspacePage.tsx` | COMPLETE | 页面风格和布局保留 | 浏览器真实 E2E 尚未执行 | TEST_ONLY | uiState、浏览器 E2E |
 | 前端运行状态 | Run/Step/Action/Evidence/Collector 展示及 Environment/Connection 管理 | `ActivityPanel`、`ConfigPanel` | COMPLETE | 现有面板保留 | 长流程和配置 CRUD 的真实浏览器 E2E 尚未执行 | TEST_ONLY | 前端状态测试/E2E |
 | 前端审批 | 自然语言、去重点击、即时状态 | `ApprovalCard` | COMPLETE | 当前交互保留 | cancelled/invalidated/expired 均有展示 | KEEP | UI 状态/E2E |
-| 数据库迁移 | 空库、升级/降级、约束 | `backend/alembic` | PARTIAL | 迁移链保留并新增三次迁移 | 单 Head 和离线 SQL 已通过，当前沙箱未完成真实往返 | TEST_ONLY | migration round trip |
+| 数据库迁移 | 空库、升级/降级、约束 | `backend/alembic` | PARTIAL | 迁移链保留并新增稳定分块与 pgvector 迁移 | 单 Head 和 revision 链已通过，当前 WSL 无 PostgreSQL，未完成真实往返 | TEST_ONLY | migration round trip |
 | Docker 部署 | 四服务、健康、持久化、秘密挂载 | `docker-compose.yml`、Dockerfiles | PARTIAL | 当前部署复用 | 缺隔离测试 SSH/HTTP profile | MODIFY | config/build/up/health |
-| 自动化测试 | 单元、集成、E2E、覆盖率、真实矩阵 | `backend/tests`、`frontend/tests`、CI | PARTIAL | Fixtures 和 CI 保留扩展 | 测试代码已补；本机后端/Docker/浏览器 E2E 受环境阻塞 | TEST_ONLY | 最终报告 |
+| 自动化测试 | 单元、集成、E2E、覆盖率、检索评测、真实矩阵 | `backend/tests`、`frontend/tests`、`evals/rag`、CI | PARTIAL | Fixtures 和 CI 保留扩展 | 无数据库后端、前端和静态 E2E 已通过；数据库/Docker/API E2E 受环境阻塞 | TEST_ONLY | `test-results/11-skills-rag-verification.md` |
 | 旧架构残留 | 不保留关键词 Router、旧 RAG、CommandRun | 全仓库引用扫描 | COMPLETE | 无旧主链 | 两个发送入口和 `/execute` 是兼容 API，不是旧 Agent | MODIFY | API 契约回归 |
 
 ## 结论

@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     agent_timeout_seconds: int = Field(default=300, alias="AGENT_TIMEOUT_SECONDS")
     agent_context_max_chars: int = Field(default=60000, alias="AGENT_CONTEXT_MAX_CHARS")
     monitor_interval_seconds: int = Field(default=15, ge=5, alias="MONITOR_INTERVAL_SECONDS")
+    verification_max_attempts: int = Field(default=3, ge=1, le=10, alias="VERIFICATION_MAX_ATTEMPTS")
+    verification_required_consecutive: int = Field(default=2, ge=1, le=5, alias="VERIFICATION_REQUIRED_CONSECUTIVE")
+    verification_interval_seconds: float = Field(default=2.0, ge=0, le=30, alias="VERIFICATION_INTERVAL_SECONDS")
+
+    embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
+    embedding_base_url: str = Field(default="https://api.openai.com/v1", alias="EMBEDDING_BASE_URL")
+    embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
+    embedding_dimensions: int = Field(default=1536, ge=1536, le=1536, alias="EMBEDDING_DIMENSIONS")
+    embedding_timeout_seconds: int = Field(default=30, ge=5, le=180, alias="EMBEDDING_TIMEOUT_SECONDS")
 
     admin_username: str = "admin"
     admin_email: str = "admin@example.com"
@@ -106,6 +115,11 @@ class Settings(BaseSettings):
         configured = [item.strip().rstrip("/") for item in self.llm_allowed_base_urls.split(",") if item.strip()]
         current = self.llm_base_url.strip().rstrip("/")
         return list(dict.fromkeys([*configured, current]))
+
+    @property
+    def embedding_configured(self) -> bool:
+        value = self.embedding_api_key.strip()
+        return bool(value and value not in {"replace-with-your-embedding-api-key", "your-api-key"})
 
 
 @lru_cache
