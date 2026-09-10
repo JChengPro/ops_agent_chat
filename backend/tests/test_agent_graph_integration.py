@@ -223,7 +223,7 @@ def test_verified_change_is_not_planned_or_approved_twice_in_one_run():
             assert len(approvals) == 1
             assert approvals[0].decision == "approved"
             assert approvals[0].consumed_at is not None
-            assert executor.calls == 4
+            assert executor.calls == 5  # two prechecks, one change, and two stable verifier reads
 
 
 def test_non_retryable_runtime_configuration_error_stops_after_one_tool_call():
