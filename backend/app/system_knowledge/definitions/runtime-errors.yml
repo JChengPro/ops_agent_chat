@@ -1,0 +1,44 @@
+- id: docker_service_exited_127
+  title: Docker 服务以退出码 127 结束
+  summary: 容器启动命令不存在、路径错误或入口脚本无法执行，服务进程没有正常启动。
+  tags: [docker, compose, exited, exit-127, command-not-found]
+  content: |
+    退出码 127 通常表示容器启动时找不到 command 或 entrypoint 指定的程序。先查看 `docker compose ps -a` 和目标服务日志，再检查镜像内对应文件是否存在、是否有执行权限、Dockerfile 是否复制或构建了该文件，以及 Compose command 是否覆盖了镜像的正确入口。
+
+    修复镜像或 Compose 配置后应重新构建并创建容器，再分别验证容器状态和应用健康检查。不要把“容器曾经创建成功”当成服务已经运行，也不要在未确认镜像内容前反复 restart；同一个错误入口只会再次退出。
+
+- id: docker_service_unhealthy
+  title: Docker 容器运行但健康检查失败
+  summary: 容器进程仍在运行，但 Docker healthcheck 没有达到 healthy。
+  tags: [docker, compose, unhealthy, healthcheck]
+  content: |
+    `running` 只说明主进程尚未退出，不能证明应用可用。先读取 `docker inspect` 中的 Health 日志，确认健康检查命令、端口、路径、启动等待时间和依赖服务。再从容器内部请求健康端点，区分应用尚未就绪、端口配置错误和依赖不可用。
+
+    启动或重启操作只有在容器为 running，且存在 healthcheck 时达到 healthy，才能标记验证通过。仅凭启动命令退出码 0 不得宣称恢复成功。
+
+- id: docker_compose_service_not_found
+  title: Docker Compose 中找不到目标服务
+  summary: 用户或 Agent 指定的服务名不在当前 Compose 项目的有效服务列表中。
+  tags: [docker, compose, service, configuration]
+  content: |
+    先在登记的工作目录和 Compose 文件下执行只读的服务列表查询，核对服务名而不是容器显示名。Compose service、container_name 和镜像名是不同概念。还应检查当前环境登记的 workdir 与 compose_file 是否指向正确项目。
+
+    不要通过模糊匹配自动选择相似名称执行变更；目标不唯一时应让用户确认准确服务名。
+
+- id: runtime_verification_failed
+  title: 命令执行成功但最终状态验证失败
+  summary: 执行命令返回成功，不代表服务达到了用户要求的最终状态。
+  tags: [runtime, verification, action, fail-closed]
+  content: |
+    系统应把“命令已提交”和“目标状态已验证”分开记录。检查 verifier 的独立观测证据：启动或重启后应确认 running 和健康状态，停止后应确认服务确实不再运行，扩缩容应确认实际副本数。
+
+    验证失败时不得标记为 verified，也不得向用户声称已恢复。若操作存在安全的已登记回滚策略，可按策略回滚并再次验证；否则停止自动动作，保留证据并提示用户继续诊断。
+
+- id: http_health_endpoint_failed
+  title: HTTP 健康检查端点不可用
+  summary: 应用进程可能存在，但登记的健康检查 URL 返回错误、超时或无法连接。
+  tags: [http, health, endpoint, timeout]
+  content: |
+    分别确认 DNS 或主机地址、端口、路径、协议以及应用监听地址。404 常表示路径错误，连接拒绝通常表示端口未监听，超时更可能与网络、防火墙或应用阻塞有关。容器处于 running 时仍可能出现这些问题。
+
+    先用只读请求复核实际响应，再更正项目环境中的健康检查配置。不要因为进程存在就忽略健康端点失败。

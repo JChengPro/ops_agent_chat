@@ -1,0 +1,48 @@
+- id: model_api_key_missing
+  title: Agent 模型 API Key 未配置
+  summary: 当前账号和服务器默认配置都没有可用的聊天模型凭据。
+  tags: [llm, api-key, model, configuration]
+  content: |
+    Agent 对话模型可以使用账号级配置，未配置时回退到部署默认值。API Key 只提交给后端并加密保存或通过部署环境注入，前端只显示“已配置”，不得回显密钥正文。Embedding 模型是服务端 RAG 配置，与聊天模型可以来自不同供应商。
+
+- id: model_call_failed
+  title: 模型服务调用失败
+  summary: LLM 请求因网络、鉴权、限流、模型名或供应商响应错误而失败。
+  tags: [llm, timeout, rate-limit, authentication]
+  content: |
+    查看经过脱敏的 ModelCall 状态、供应商、模型名和耗时，区分 401 鉴权失败、429 限流、超时和服务端错误。检查 Base URL 是否在允许列表内。不要把 API Key 写入日志，也不要因为模型失败而跳过 Capability、Policy 或审批流程。
+
+- id: structured_decision_invalid
+  title: 模型结构化决策未通过 Schema 校验
+  summary: 模型返回内容不是合法 AgentDecision，系统已阻止继续规划或执行。
+  tags: [llm, schema, decision, fail-closed]
+  content: |
+    AgentDecision 要求决策类型、请求效果和工具调用彼此一致。例如变更请求必须使用 propose_change，工具决策必须包含已注册能力。系统可以进行一次受限的 JSON 修复；再次失败后应 fail closed，不执行任何新变更，并提示用户重试或缩小问题范围。
+
+- id: embedding_lexical_fallback
+  title: Embedding 不可用时退回关键词检索
+  summary: 项目文档仍可被检索，但缺少向量语义召回，相关性和召回率可能下降。
+  tags: [rag, embedding, lexical, fallback]
+  content: |
+    检查 Embedding API Key、Base URL、模型名、维度和批量请求限制。已写入数据库的向量维度必须与当前配置一致。回退到词法检索可以保持基础可用性，但不能冒充完整混合检索通过；应在界面或测试报告中明确实际检索模式。
+
+- id: embedding_dimension_mismatch
+  title: Embedding 向量维度不一致
+  summary: 模型返回维度与数据库向量列或配置的 dimensions 不匹配。
+  tags: [rag, embedding, dimension, pgvector]
+  content: |
+    模型切换后先确认官方输出维度以及 API 是否支持 dimensions 参数，再与数据库 schema 和部署配置对齐。维度变化通常需要重新生成全部文档向量；不能把不同维度的旧向量直接混用。迁移前应保留词法检索回退，并通过评测集比较重建前后的召回率与延迟。
+
+- id: rag_no_relevant_knowledge
+  title: 项目知识库没有召回相关内容
+  summary: 检索结果为空或低于相关性阈值，回答不应伪装成引用了项目文档。
+  tags: [rag, retrieval, relevance, knowledge]
+  content: |
+    先确认文档已验证、已切分且向量回填完成，再检查问题中的术语是否出现在文档或可被语义模型关联。通过固定评测集比较 lexical、vector、RRF 和 reranker，而不是只凭单个问题调参。没有可靠召回时应明确知识缺口，不能附上不相关来源。
+
+- id: rag_latency_tradeoff
+  title: RAG 准确率与响应延迟的取舍
+  summary: 更大的候选集和 LLM reranker 可能提高排序质量，也会增加网络调用与首字延迟。
+  tags: [rag, reranker, latency, evaluation]
+  content: |
+    先用混合检索产生有限候选，再只在候选模糊或高价值问题上启用 reranker。记录 Recall@K、MRR、nDCG、端到端延迟和模型成本。若 reranker 提升很小但耗时明显增加，应使用自适应策略或关闭，而不是默认每次调用。

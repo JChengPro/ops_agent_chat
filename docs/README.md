@@ -12,6 +12,7 @@
 - `implementation/02-implementation-decisions.md`：本轮实现决策。
 - `implementation/03-legacy-cleanup.md`：旧实现引用与清理结论。
 - `implementation/04-final-architecture-status.md`：最终架构、安全不变量和成熟度。
+- `rag/RAG_ENGINEERING_DECISIONS_AND_EXPERIMENTS.md`：RAG 参数、准确性与延迟的实测取舍。
 - `knowledge/videohub/`：默认项目经验种子，不是主设计文档。
 - `review/TEST_ACCEPTANCE_CHECKLIST.md`：代码和发布验收清单。
 - `../test-results/10-final-report.md`：本次实际测试、阻塞项和发布判断。

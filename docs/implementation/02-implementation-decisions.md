@@ -63,3 +63,7 @@ Markdown 文档按标题路径和段落分块，Chunk ID 由来源、标题路�
 ## D-016 运行状态变更采用稳定窗口验证
 
 服务启停、重启、扩缩容和登记部署不能以单次成功观察结束。默认最多验证三次，要求连续两次满足 Runtime 专用 verifier；每次验证保存独立 Action 和 Evidence。策略拒绝、绑定缺失、解析失败、所有权丢失或窗口耗尽均不能标记为 verified。
+
+## D-017 RRF 后使用可失败降级的模型重排
+
+项目文档先由词法和可选向量通道召回，再使用 RRF 形成固定候选集。只有候选中的唯一文档数大于 Top-K 时，Agent 才使用当前用户配置的 OpenAI-compatible 模型做 listwise rerank；小语料直接保留确定性排序。重排只能改变知识候选顺序，不能改变 Capability、Policy、Approval 或 Runtime Evidence。模型超时、调用失败、遗漏候选、返回未知或重复文档 ID、分数越界时 fail open to retrieval：保留原 RRF 顺序并记录失败的 ModelCall，而不是让整个 AgentRun 失败。缓存必须绑定项目、Environment、模型、Query 和 Chunk 内容 Hash。完整实验依据见 `docs/rag/RAG_ENGINEERING_DECISIONS_AND_EXPERIMENTS.md`。

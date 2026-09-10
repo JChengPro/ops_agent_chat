@@ -1,5 +1,5 @@
 import { apiFetch, setToken } from "./client";
-import type { Action, AgentRun, AgentStep, Approval, ApprovalBatchDecisionResponse, ApprovalDecisionResponse, ChatMessage, ChatSession, CollectorRun, Connection, ConnectionPayload, Entity, Environment, EnvironmentPayload, Evidence, ExperienceItem, LLMSettings, LLMSettingsPayload, MonitorEvent, Project, SystemKnowledgeItem, User, UserSession } from "./types";
+import type { Action, AgentRun, AgentStep, Approval, ApprovalBatchDecisionResponse, ApprovalDecisionResponse, ChatMessage, ChatSession, CollectorRun, Connection, ConnectionPayload, Entity, Environment, EnvironmentPayload, Evidence, ExperienceItem, LLMSettings, LLMSettingsPayload, MonitorEvent, Project, SystemKnowledgeDocument, User, UserSession } from "./types";
 
 export async function login(username: string, password: string, rememberMe = false): Promise<User> { const data = await apiFetch<{access_token:string;user:User}>("/api/auth/login", {method:"POST",body:JSON.stringify({username,password,remember_me:rememberMe})}); setToken(data.access_token,rememberMe); return data.user; }
 export const registrationConfig = () => apiFetch<{enabled:boolean;invite_code_required:boolean}>("/api/auth/registration");
@@ -52,5 +52,5 @@ export const listExperience = (id:number) => apiFetch<ExperienceItem[]>(`/api/pr
 export const createExperience = (id:number,payload:{title:string;content:string;trust_status:string;tags:string[]}) => apiFetch<ExperienceItem>(`/api/projects/${id}/experience`,{method:"POST",body:JSON.stringify(payload)});
 export const updateExperience = (id:number,payload:Partial<ExperienceItem>) => apiFetch<ExperienceItem>(`/api/experience/${id}`,{method:"PATCH",body:JSON.stringify(payload)});
 export const deleteExperience = (id:number) => apiFetch<{deleted:boolean}>(`/api/experience/${id}`,{method:"DELETE"});
-export const listSystemKnowledge = () => apiFetch<SystemKnowledgeItem[]>("/api/system-knowledge");
+export const listSystemKnowledge = () => apiFetch<SystemKnowledgeDocument[]>("/api/system-knowledge");
 export const sendFeedback = (id:number,rating:string) => apiFetch(`/api/messages/${id}/feedback`,{method:"POST",body:JSON.stringify({rating})});

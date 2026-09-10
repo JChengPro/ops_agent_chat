@@ -1,0 +1,1548 @@
+{
+  "evaluator": "production-compatible-llm-chunk-reranker-v2",
+  "generated_at": "2026-09-09T08:07:19.579231+00:00",
+  "model": "deepseek-v4-pro",
+  "retrieval_limit": 5,
+  "candidate_limit": 20,
+  "max_chunks_per_source": 2,
+  "rerank_calls": 15,
+  "rerank_skips": 0,
+  "rerank_failures": 0,
+  "metrics": {
+    "all": {
+      "cases": 15,
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.23333333333333334,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.9688578654609098,
+        "context_chars": 1059.9333333333334
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.23333333333333334,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.9742098128510306,
+        "context_chars": 1055.2666666666667
+      },
+      "delta": {
+        "evidence_hit": 0.0,
+        "evidence_recall": 0.0,
+        "precision": 0.0,
+        "reciprocal_rank": 0.0,
+        "ndcg": 0.005351947390120793,
+        "context_chars": -4.6666666666667425
+      }
+    },
+    "dev": {
+      "cases": 11,
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.23636363636363636,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.9927018899225625,
+        "context_chars": 1097.1818181818182
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.23636363636363636,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "context_chars": 1090.8181818181818
+      },
+      "delta": {
+        "evidence_hit": 0.0,
+        "evidence_recall": 0.0,
+        "precision": 0.0,
+        "reciprocal_rank": 0.0,
+        "ndcg": 0.007298110077437525,
+        "context_chars": -6.363636363636488
+      }
+    },
+    "holdout": {
+      "cases": 4,
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.225,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.9032867981913646,
+        "context_chars": 957.5
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.225,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.9032867981913646,
+        "context_chars": 957.5
+      },
+      "delta": {
+        "evidence_hit": 0.0,
+        "evidence_recall": 0.0,
+        "precision": 0.0,
+        "reciprocal_rank": 0.0,
+        "ndcg": 0.0,
+        "context_chars": 0.0
+      }
+    }
+  },
+  "latency_seconds": {
+    "mean": 12.201197184533278,
+    "p50": 10.99092768400078,
+    "p95": 26.31424313500247
+  },
+  "limitations": [
+    "This evaluates retrieval/reranking only, not final answer correctness.",
+    "The current project-document corpus is small; results must not be generalized to production scale.",
+    "The same fixed candidate set is used before and after reranking for a paired comparison."
+  ],
+  "cases": [
+    {
+      "id": "proj-001",
+      "split": "dev",
+      "candidate_count": 9,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.4,
+        "context_chars": 1119.0
+      },
+      "latency_seconds": 10.304376911000872,
+      "error": null
+    },
+    {
+      "id": "proj-002",
+      "split": "dev",
+      "candidate_count": 9,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "latency_seconds": 10.99092768400078,
+      "error": null
+    },
+    {
+      "id": "proj-003",
+      "split": "dev",
+      "candidate_count": 9,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "latency_seconds": 11.897970195997914,
+      "error": null
+    },
+    {
+      "id": "proj-004",
+      "split": "dev",
+      "candidate_count": 5,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1070.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1070.0
+      },
+      "latency_seconds": 6.430312078999123,
+      "error": null
+    },
+    {
+      "id": "proj-005",
+      "split": "dev",
+      "candidate_count": 7,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.4,
+        "context_chars": 1119.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "latency_seconds": 7.3940864149990375,
+      "error": null
+    },
+    {
+      "id": "proj-006",
+      "split": "dev",
+      "candidate_count": 6,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "Nginx 502"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1069.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1059.0
+      },
+      "latency_seconds": 10.334020745998714,
+      "error": null
+    },
+    {
+      "id": "proj-007",
+      "split": "dev",
+      "candidate_count": 6,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "latency_seconds": 7.6242015509997145,
+      "error": null
+    },
+    {
+      "id": "proj-008",
+      "split": "dev",
+      "candidate_count": 7,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1070.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1070.0
+      },
+      "latency_seconds": 20.087166499997693,
+      "error": null
+    },
+    {
+      "id": "proj-009",
+      "split": "dev",
+      "candidate_count": 7,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "Nginx 502"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1020.0
+      },
+      "latency_seconds": 13.68335260099775,
+      "error": null
+    },
+    {
+      "id": "proj-010",
+      "split": "holdout",
+      "candidate_count": 4,
+      "source_count": 3,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "Nginx 502"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "Nginx 502"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.25,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.25,
+        "context_chars": 808.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.25,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.25,
+        "context_chars": 808.0
+      },
+      "latency_seconds": 12.709609201003332,
+      "error": null
+    },
+    {
+      "id": "proj-011",
+      "split": "holdout",
+      "candidate_count": 5,
+      "source_count": 3,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "Redis 连接失败"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "Redis 连接失败"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.25,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.25,
+        "context_chars": 835.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.25,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.25,
+        "context_chars": 835.0
+      },
+      "latency_seconds": 14.038601945001574,
+      "error": null
+    },
+    {
+      "id": "proj-012",
+      "split": "holdout",
+      "candidate_count": 5,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1069.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1069.0
+      },
+      "latency_seconds": 8.48383261699928,
+      "error": null
+    },
+    {
+      "id": "multi-001",
+      "split": "dev",
+      "candidate_count": 8,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.4,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1081.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.4,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.4,
+        "context_chars": 1119.0
+      },
+      "latency_seconds": 26.31424313500247,
+      "error": null
+    },
+    {
+      "id": "multi-005",
+      "split": "dev",
+      "candidate_count": 7,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "变更边界"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "磁盘不足"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.4,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.9197207891481876,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1070.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.4,
+        "reciprocal_rank": 1.0,
+        "ndcg": 1.0,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1070.0
+      },
+      "latency_seconds": 13.025675202999992,
+      "error": null
+    },
+    {
+      "id": "multi-008",
+      "split": "holdout",
+      "candidate_count": 7,
+      "source_count": 4,
+      "rerank_skipped": false,
+      "before_chunks": [
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        }
+      ],
+      "after_chunks": [
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验",
+            "已知范围"
+          ]
+        },
+        {
+          "source_id": "project:videohub:readme",
+          "heading_path": [
+            "VideoHub 项目经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:compose-ops",
+          "heading_path": [
+            "VideoHub Docker Compose 运维经验",
+            "调查顺序"
+          ]
+        },
+        {
+          "source_id": "project:videohub:deployment",
+          "heading_path": [
+            "VideoHub 部署经验"
+          ]
+        },
+        {
+          "source_id": "project:videohub:troubleshooting",
+          "heading_path": [
+            "VideoHub 排障经验",
+            "项目不可用"
+          ]
+        }
+      ],
+      "before": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.6131471927654584,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "after": {
+        "evidence_hit": 1.0,
+        "evidence_recall": 1.0,
+        "precision": 0.2,
+        "reciprocal_rank": 1.0,
+        "ndcg": 0.6131471927654584,
+        "duplicate_ratio": 0.2,
+        "context_chars": 1118.0
+      },
+      "latency_seconds": 9.699580984000931,
+      "error": null
+    }
+  ]
+}

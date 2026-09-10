@@ -21,6 +21,7 @@ export function chatMessagesRevision(rows: ChatMessage[]): string {
       message.message_type,
       message.content,
       String(message.metadata_json.run_status || ""),
+      (message.metadata_json.system_knowledge_sources || []).map(item => item.id).join(","),
       approvals,
     ].join(":");
   }).join("|");

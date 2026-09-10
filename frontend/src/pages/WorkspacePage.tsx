@@ -2,7 +2,7 @@ import { FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, u
 import { createPortal } from "react-dom";
 import { Activity, BadgeCheck, BookOpenText, ChevronRight, CircleAlert, CircleCheck, CircleHelp, Code2, Edit3, Folder, FolderOpen, LogOut, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Send, Server, Settings, StopCircle, ThumbsDown, ThumbsUp, Trash2, UserCircle, XCircle } from "lucide-react";
 import { cancelCollectorRun, cancelRun, collectContext, createConnection, createEnvironment, createExperience, createProject, createSession, decideApprovalBatch, deleteConnection, deleteEnvironment, deleteExperience, deleteProject, deleteSession, getRun, listActions, listCollectorRuns, listConnections, listEntities, listEnvironments, listEvidence, listExperience, listGeneralRuns, listGeneralSessions, listMessages, listMonitorEvents, listProjects, listRuns, listSessions, listSteps, listSystemKnowledge, queueMessage, sendFeedback, testEnvironmentConnection, updateConnection, updateEnvironment, updateExperience, updateProject, updateSession } from "../api/ops";
-import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, Entity, Environment, Evidence, ExperienceItem, MonitorEvent, Project, SystemKnowledgeItem, User } from "../api/types";
+import type { Action, AgentRun, AgentStep, Approval, ChatMessage, ChatSession, CollectorRun, Connection, Entity, Environment, Evidence, ExperienceItem, MonitorEvent, Project, SystemKnowledgeDocument, User } from "../api/types";
 import { ProjectConfigDialog, type ProjectConfigurationValue } from "../components/ProjectConfigDialog";
 import { ModelSettingsDialog } from "../components/ModelSettingsDialog";
 import { AccountSettingsDialog } from "../components/AccountSettingsDialog";
@@ -17,7 +17,7 @@ type ConfirmDialogState = {title:string;message:string;confirmLabel:string;onCon
 
 export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpdated:(user:User)=>void;onLogout:()=>void|Promise<void>}) {
   const [projects,setProjects]=useState<Project[]>([]), [sessions,setSessions]=useState<ChatSession[]>([]), [messages,setMessages]=useState<ChatMessage[]>([]);
-  const [environments,setEnvironments]=useState<Environment[]>([]), [connections,setConnections]=useState<Connection[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [systemKnowledge,setSystemKnowledge]=useState<SystemKnowledgeItem[]>([]), [entities,setEntities]=useState<Entity[]>([]), [collectorRuns,setCollectorRuns]=useState<CollectorRun[]>([]), [monitorEvents,setMonitorEvents]=useState<MonitorEvent[]>([]);
+  const [environments,setEnvironments]=useState<Environment[]>([]), [connections,setConnections]=useState<Connection[]>([]), [runs,setRuns]=useState<AgentRun[]>([]), [experience,setExperience]=useState<ExperienceItem[]>([]), [systemKnowledge,setSystemKnowledge]=useState<SystemKnowledgeDocument[]>([]), [entities,setEntities]=useState<Entity[]>([]), [collectorRuns,setCollectorRuns]=useState<CollectorRun[]>([]), [monitorEvents,setMonitorEvents]=useState<MonitorEvent[]>([]);
   const [projectId,setProjectId]=useState<number|null>(null), [sessionId,setSessionId]=useState<number|null>(null), [input,setInput]=useState("");
   const [projectsReady,setProjectsReady]=useState(false);
   const [pendingRuns,setPendingRuns]=useState<Record<number,string>>({}), [cancellingRunId,setCancellingRunId]=useState<string|null>(null);
@@ -26,6 +26,7 @@ export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpd
   const [projectConfigTarget,setProjectConfigTarget]=useState<ProjectConfigTarget>(null), [textDialog,setTextDialog]=useState<TextDialogState>(null), [confirmDialog,setConfirmDialog]=useState<ConfirmDialogState>(null);
   const [modelSettingsOpen,setModelSettingsOpen]=useState(false);
   const [accountSettingsOpen,setAccountSettingsOpen]=useState(false);
+  const [knowledgePreview,setKnowledgePreview]=useState<{document:SystemKnowledgeDocument;focusItemId?:string}|null>(null);
   const endRef=useRef<HTMLDivElement|null>(null), composerRef=useRef<HTMLInputElement|null>(null), messageRefs=useRef<Record<number,HTMLElement|null>>({}), currentSessionRef=useRef<number|null>(null);
   const project=useMemo(()=>projects.find(x=>x.id===projectId)||null,[projects,projectId]);
   const session=useMemo(()=>sessions.find(x=>x.id===sessionId)||null,[sessions,sessionId]);
@@ -168,6 +169,7 @@ export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpd
     {projectConfigTarget&&<ProjectConfigDialog project={projectConfigTarget.project} environment={projectConfigTarget.environment} connection={projectConfigTarget.connection} onClose={()=>setProjectConfigTarget(null)} onSave={saveProjectConfiguration}/>}
     {accountSettingsOpen&&<AccountSettingsDialog user={user} onClose={()=>setAccountSettingsOpen(false)} onUserUpdated={onUserUpdated} onLogout={onLogout} onOpenModelSettings={()=>{setAccountSettingsOpen(false);setModelSettingsOpen(true);}}/>}
     {modelSettingsOpen&&<ModelSettingsDialog onClose={()=>setModelSettingsOpen(false)} onSaved={message=>showNotice("success",message)}/>}
+    {knowledgePreview&&<SystemKnowledgePreviewDialog knowledgeDocument={knowledgePreview.document} focusItemId={knowledgePreview.focusItemId} onClose={()=>setKnowledgePreview(null)}/>}
     {textDialog&&<TextInputDialog {...textDialog} onClose={()=>setTextDialog(null)}/>}
     {confirmDialog&&<ConfirmDialog {...confirmDialog} onClose={()=>setConfirmDialog(null)}/>}
     {menuProject&&menu&&createPortal(<ActionMenu pinned={menuProject.is_pinned} x={menu.x} y={menu.y} onAction={action=>mutateProject(menuProject,action)}/>,document.body)}
@@ -191,12 +193,12 @@ export function WorkspacePage({user,onUserUpdated,onLogout}:{user:User;onUserUpd
     <section className="glass-panel chat-pane"><header className="chat-header"><div><strong>{project?.name??"通用聊天"}</strong><span>{session?.title??"新会话"}</span></div><div className="chat-header-actions">{project&&activeEnvironment&&<><select className="environment-select" value={activeEnvironment.id} onChange={event=>void selectEnvironment(Number(event.target.value))} title="当前运行环境">{environments.map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select><button type="button" className={`monitoring-status-chip ${monitoringStatus.tone}`} title={`${monitoringStatus.detail} 点击打开配置。`} onClick={()=>configureEnvironment(activeEnvironment)}><Activity size={14}/><span>{monitoringStatus.label}</span></button></>}<button className={`outline-toggle ${navOpen?"active":""}`} onClick={()=>setNavOpen(x=>!x)} title="消息导航"><MessageSquare size={17}/></button><span className="mode-badge">受控运维</span></div></header>
       <MessageNav open={navOpen} messages={messages} jump={id=>messageRefs.current[id]?.scrollIntoView({behavior:"smooth",block:"center"})}/>
       <div className="message-list">{messages.length===0&&!sending&&<div className="empty-chat"><div className="empty-mark">&gt;_</div><h2>我能帮你处理什么？</h2><p>可以问通用问题，也可以调查当前项目或提出受控变更。</p></div>}
-        {messages.map(m=><MessageView key={m.id} message={m} setRef={el=>{messageRefs.current[m.id]=el;}} onApproval={approve} approvalBusy={approvalBusy}/>) }{sending&&<div className="message assistant"><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="typing-line"><span/><span/><span/></div></div></div>}<div ref={endRef}/></div>
+        {messages.map(m=><MessageView key={m.id} message={m} setRef={el=>{messageRefs.current[m.id]=el;}} onApproval={approve} approvalBusy={approvalBusy} onOpenKnowledge={itemId=>{const document=systemKnowledge.find(candidate=>candidate.items.some(item=>item.id===itemId));if(document)setKnowledgePreview({document,focusItemId:itemId});}}/>) }{sending&&<div className="message assistant"><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="typing-line"><span/><span/><span/></div></div></div>}<div ref={endRef}/></div>
       <form className="composer" onSubmit={submit}><input ref={composerRef} value={input} onChange={e=>setInput(e.target.value)} placeholder="输入问题或描述要完成的任务" disabled={sending}/>{activeRunId?<button type="button" className="stop-run" onClick={stopRun} disabled={cancelling}><StopCircle size={18}/>{cancelling?"停止中":"停止"}</button>:<button disabled={sending}><Send size={18}/>发送</button>}</form>
     </section>
     <aside className="glass-panel right-pane"><div className="right-pane-head"><div className="tabs"><button className={tab==="activity"?"active":""} onClick={()=>setTab("activity")}><Activity size={16}/>活动</button><button className={tab==="experience"?"active":""} onClick={()=>setTab("experience")}><BookOpenText size={16}/>文档</button><button className={tab==="config"?"active":""} onClick={()=>setTab("config")}><Settings size={16}/>配置</button></div></div>
       {tab==="activity"&&<ActivityPanel runs={visibleRuns} monitorEvents={monitorEvents} onUseRecommendation={useMonitorRecommendation}/>}
-      {tab==="experience"&&<DocumentsPanel items={experience} systemItems={systemKnowledge} projectId={projectId} onChange={setExperience} onRequestDelete={(item,onDelete)=>requestConfirm("删除项目文档",`文档“${item.title}”将从项目文档列表和检索内容中移除。`,"删除文档",onDelete)}/>}
+      {tab==="experience"&&<DocumentsPanel items={experience} systemDocuments={systemKnowledge} projectId={projectId} onChange={setExperience} onOpenSystem={document=>setKnowledgePreview({document})} onRequestDelete={(item,onDelete)=>requestConfirm("删除项目文档",`文档“${item.title}”将从项目文档列表和检索内容中移除。`,"删除文档",onDelete)}/>}
       {tab==="config"&&<ConfigPanel
         project={project}
         environment={activeEnvironment}
@@ -236,10 +238,12 @@ function TextInputDialog({title,label,value,submitLabel,onSubmit,onClose}:{title
 
 function ConfirmDialog({title,message,confirmLabel,onConfirm,onClose}:{title:string;message:string;confirmLabel:string;onConfirm:()=>Promise<void>;onClose:()=>void}){const [saving,setSaving]=useState(false),[error,setError]=useState("");async function confirm(){if(saving)return;setSaving(true);setError("");try{await onConfirm();onClose();}catch(value){setError(value instanceof Error?value.message:"操作失败");setSaving(false);}}return createPortal(<div className="dialog-backdrop" onMouseDown={event=>event.target===event.currentTarget&&!saving&&onClose()}><section className="small-dialog confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title"><header className="dialog-header"><h2 id="confirm-dialog-title">{title}</h2><button className="dialog-close" onClick={onClose} disabled={saving} aria-label="关闭"><XCircle size={18}/></button></header><p>{message}</p>{error&&<p className="dialog-error">{error}</p>}<footer className="dialog-actions"><button onClick={onClose} disabled={saving}>取消</button><button className="danger-confirm" onClick={()=>void confirm()} disabled={saving}>{saving?"处理中...":confirmLabel}</button></footer></section></div>,document.body)}
 
-function MessageView({message,setRef,onApproval,approvalBusy}:{message:ChatMessage;setRef:(e:HTMLElement|null)=>void;onApproval:(a:Approval[],d:"approve"|"reject",selected?:string[])=>void;approvalBusy:ApprovalSubmission}){
+function MessageView({message,setRef,onApproval,approvalBusy,onOpenKnowledge}:{message:ChatMessage;setRef:(e:HTMLElement|null)=>void;onApproval:(a:Approval[],d:"approve"|"reject",selected?:string[])=>void;approvalBusy:ApprovalSubmission;onOpenKnowledge:(itemId:string)=>void}){
   if(message.role==="user")return <article className="message user" ref={setRef}><div className="user-bubble">{message.content}</div></article>;
   const approvals=message.metadata_json.approvals||[];
-  return <article className="message assistant" ref={setRef}><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="answer-header"><span>Ops Agent</span><small>{String(message.metadata_json.run_status||"")}</small></div><RichText text={message.content}/>{approvals.length>0&&<ApprovalBatchCard items={approvals} busy={approvalBusy} onDecision={onApproval}/>} {Boolean(message.metadata_json.evidence_ids?.length)&&<div className="source-strip"><span>依据</span><em>{message.metadata_json.evidence_ids!.length} 条可追踪证据</em></div>}<Feedback messageId={message.id}/></div></article>;
+  const knowledgeReported=Array.isArray(message.metadata_json.system_knowledge_sources), knowledge=message.metadata_json.system_knowledge_sources||[], evidenceCount=message.metadata_json.evidence_ids?.length||0;
+  const showNoKnowledge=knowledgeReported&&message.project_id===null&&knowledge.length===0&&message.metadata_json.run_status==="completed";
+  return <article className="message assistant" ref={setRef}><div className="avatar bot-avatar"><Code2 size={18}/></div><div className="assistant-card"><div className="answer-header"><span>Ops Agent</span><small>{String(message.metadata_json.run_status||"")}</small></div><RichText text={message.content}/>{approvals.length>0&&<ApprovalBatchCard items={approvals} busy={approvalBusy} onDecision={onApproval}/>} {(knowledge.length>0||evidenceCount>0||showNoKnowledge)&&<div className="source-strip"><span>依据</span>{knowledge.map(item=><button type="button" key={item.id} title={`打开${item.document_title||"系统内置知识"}并定位到：${item.title}`} onClick={()=>onOpenKnowledge(item.id)}><BookOpenText size={13}/>{item.title}</button>)}{showNoKnowledge&&<em className="source-none">未引用系统内置知识</em>}{evidenceCount>0&&<em>{evidenceCount} 条可追踪证据</em>}</div>}<Feedback messageId={message.id}/></div></article>;
 }
 function RichText({text}:{text:string}){return <div className="natural-answer">{text.split(/\n{2,}/).map((p,i)=>{const lines=p.split("\n");return <div key={i} className="answer-paragraph">{lines.map((line,j)=>{const value=line.replace(/^#{1,6}\s*/,"");if(/^#{1,6}\s/.test(line))return <h4 key={j}>{formatInline(value)}</h4>;if(/^[-*]\s+/.test(line))return <p className="answer-bullet" key={j}>{formatInline(value.replace(/^[-*]\s+/,""))}</p>;if(/^\d+\.\s+/.test(line))return <p className="answer-number" key={j}>{formatInline(line)}</p>;return <p key={j}>{formatInline(value)}</p>})}</div>})}</div>}
 function formatInline(text:string){return text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean).map((part,i)=>part.startsWith("`")&&part.endsWith("`")?<code key={i}>{part.slice(1,-1)}</code>:part.startsWith("**")&&part.endsWith("**")?<strong key={i}>{part.slice(2,-2)}</strong>:part)}
@@ -340,18 +344,20 @@ function DocumentPreviewDialog({item,onClose}:{item:ExperienceItem;onClose:()=>v
   </div>,document.body);
 }
 
-function SystemKnowledgePreviewDialog({item,onClose}:{item:SystemKnowledgeItem;onClose:()=>void}){
+function SystemKnowledgePreviewDialog({knowledgeDocument,focusItemId,onClose}:{knowledgeDocument:SystemKnowledgeDocument;focusItemId?:string;onClose:()=>void}){
+  const contentRef=useRef<HTMLDivElement|null>(null);
+  useEffect(()=>{if(!focusItemId)return;const target=Array.from(contentRef.current?.querySelectorAll<HTMLElement>("[data-knowledge-id]")||[]).find(item=>item.dataset.knowledgeId===focusItemId);target?.scrollIntoView({block:"start"});},[focusItemId]);
   return createPortal(<div className="dialog-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}>
     <section className="document-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="system-knowledge-preview-title">
-      <header className="dialog-header"><div><h2 id="system-knowledge-preview-title">{item.title}</h2><p>系统内置知识 · 只读</p></div><button className="dialog-close" onClick={onClose} aria-label="关闭"><XCircle size={18}/></button></header>
-      <div className="document-preview-content"><pre className="document-raw-content">{item.content}</pre></div>
+      <header className="dialog-header"><div><h2 id="system-knowledge-preview-title">{knowledgeDocument.title}</h2><p>{knowledgeDocument.summary} · {knowledgeDocument.items.length} 个知识条目 · 只读</p></div><button className="dialog-close" onClick={onClose} aria-label="关闭"><XCircle size={18}/></button></header>
+      <div className="document-preview-content system-knowledge-document" ref={contentRef}>{knowledgeDocument.items.map(item=><section key={item.id} data-knowledge-id={item.id} className={item.id===focusItemId?"focused":""}><h3>{item.title}</h3><p>{item.summary}</p><pre className="document-raw-content">{item.content}</pre></section>)}</div>
       <footer className="dialog-actions"><button onClick={onClose}>关闭</button></footer>
     </section>
   </div>,document.body);
 }
 
-function DocumentsPanel({items,systemItems,projectId,onChange,onRequestDelete}:{items:ExperienceItem[];systemItems:SystemKnowledgeItem[];projectId:number|null;onChange:(x:ExperienceItem[])=>void;onRequestDelete:(item:ExperienceItem,onDelete:()=>Promise<void>)=>void}){
-  const [saving,setSaving]=useState(false),[error,setError]=useState(""),[selected,setSelected]=useState<ExperienceItem|null>(null),[selectedSystem,setSelectedSystem]=useState<SystemKnowledgeItem|null>(null);
+function DocumentsPanel({items,systemDocuments,projectId,onChange,onRequestDelete,onOpenSystem}:{items:ExperienceItem[];systemDocuments:SystemKnowledgeDocument[];projectId:number|null;onChange:(x:ExperienceItem[])=>void;onRequestDelete:(item:ExperienceItem,onDelete:()=>Promise<void>)=>void;onOpenSystem:(document:SystemKnowledgeDocument)=>void}){
+  const [saving,setSaving]=useState(false),[error,setError]=useState(""),[selected,setSelected]=useState<ExperienceItem|null>(null);
   const projectDocumentsCrowded=items.length>4;
   async function upload(file?:File){
     if(!file||projectId===null)return;
@@ -392,13 +398,12 @@ function DocumentsPanel({items,systemItems,projectId,onChange,onRequestDelete}:{
       </div>
     </section>}
     <section className="document-section system-knowledge-section" aria-label="系统内置知识库">
-      <div className="document-section-title"><div><h3>系统内置知识库</h3><span>{systemItems.length} 份</span></div><em>只读</em></div>
-      <div className="system-knowledge-scroll">{systemItems.length===0&&<p className="empty-note">系统内置知识库尚未配置。</p>}
-        {systemItems.map(item=><div className="doc-row system-doc-row" key={item.id}><button className="document-open" onClick={()=>setSelectedSystem(item)} title={`查看 ${item.title}`}><BookOpenText size={17}/><span><strong>{item.title}</strong><small>{item.summary}</small></span></button></div>)}
+      <div className="document-section-title"><div><h3>系统内置知识库</h3><span>{systemDocuments.length} 份 · {systemDocuments.reduce((total,document)=>total+document.items.length,0)} 条</span></div><em>只读</em></div>
+      <div className="system-knowledge-scroll">{systemDocuments.length===0&&<p className="empty-note">系统内置知识库尚未配置。</p>}
+        {systemDocuments.map(document=><div className="doc-row system-doc-row" key={document.id}><button className="document-open" onClick={()=>onOpenSystem(document)} title={`查看 ${document.title}`}><BookOpenText size={17}/><span><strong>{document.title}</strong><small>{document.summary} · {document.items.length} 条</small></span></button></div>)}
       </div>
     </section>
     {selected&&<DocumentPreviewDialog item={selected} onClose={()=>setSelected(null)}/>}
-    {selectedSystem&&<SystemKnowledgePreviewDialog item={selectedSystem} onClose={()=>setSelectedSystem(null)}/>}
   </div>;
 }
 function ConfigPanel({project,environment,environments,connections,canManage,entities,collectorRuns,onCollect,onCancel,onDeleteEnvironment,onTestConnection,onConfigure}:{project:Project|null;environment:Environment|null;environments:Environment[];connections:Connection[];canManage:boolean;entities:Entity[];collectorRuns:CollectorRun[];onCollect:()=>Promise<void>;onCancel:(id:number)=>Promise<void>;onDeleteEnvironment:(item:Environment)=>Promise<void>;onTestConnection:(environmentId:number)=>Promise<void>;onConfigure:(item:Environment|null)=>void}){

@@ -1,0 +1,36 @@
+- id: monitoring_disabled
+  title: 主动巡检未开启
+  summary: 当前环境不会被 Worker 定期扫描，也不会产生主动告警或自动修复。
+  tags: [monitoring, disabled, environment]
+  content: |
+    主动巡检和低风险自动修复是两个独立开关。巡检关闭时，即使自动修复开关显示开启，自动修复也不会生效。请在项目配置中确认当前环境的开关状态，并确认 Worker 正在运行。
+
+- id: monitoring_connection_failed
+  title: 主动巡检无法连接目标环境
+  summary: 巡检任务已运行，但在读取服务状态前因 SSH 或运行时连接错误停止。
+  tags: [monitoring, ssh, connection, diagnosis]
+  content: |
+    先查看巡检事件的具体错误码，按主机指纹、私钥缺失、认证失败、连接超时等类别处理。连接失败时系统没有获得真实服务状态，因此不能据此断言业务服务已经停止，也不能直接自动修复服务。
+
+    恢复连接后应立即进行一次只读复核，确认当前状态；安全校验不得为了恢复巡检而关闭。
+
+- id: auto_remediation_not_triggered
+  title: 巡检发现异常但没有触发自动修复
+  summary: 异常不满足低风险、允许能力、可验证和策略放行等自动修复条件。
+  tags: [monitoring, remediation, policy, risk]
+  content: |
+    自动修复只处理策略允许的低风险、目标明确且具有可靠 verifier 的动作。高风险操作、连接身份异常、目标不明确、缺少验证器或自动修复开关关闭时，系统应告警并给出建议，而不是强行执行。查看巡检事件、Policy 决策和对应 Action 可以确定具体阻断原因。
+
+- id: remediation_verification_failed
+  title: 自动修复执行后验证未通过
+  summary: 自动动作可能已经执行，但独立状态检查没有证明服务恢复正常。
+  tags: [monitoring, remediation, verification, failed]
+  content: |
+    保留执行证据和 verifier 证据，并以最终只读观测为准。若稍后巡检确认状态正常，应把同一事件更新为已恢复，避免旧的失败弹窗继续误导用户。若仍异常，应停止重复自动修复，进入诊断或人工审批流程。
+
+- id: monitoring_worker_unavailable
+  title: Worker 不可用导致巡检停止
+  summary: Web 前端或 API 正常不代表主动巡检正常，巡检依赖独立 Worker 进程。
+  tags: [monitoring, worker, heartbeat, docker]
+  content: |
+    检查 Worker 容器状态、日志和心跳记录，再检查数据库与消息循环是否可用。Worker exited 时不会继续主动巡检，也不会领取普通 AgentRun。修复 Worker 后应确认心跳恢复并手动触发或等待下一轮巡检。

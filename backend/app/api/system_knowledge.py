@@ -11,4 +11,4 @@ router = APIRouter(tags=["system-knowledge"])
 @router.get("/system-knowledge")
 def list_system_knowledge(user: User = Depends(get_current_user)) -> list[dict]:
     del user
-    return system_knowledge_registry.list()
+    return system_knowledge_registry.documents()

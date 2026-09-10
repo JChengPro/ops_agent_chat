@@ -36,6 +36,11 @@ class ClaimDraft(BaseModel):
     confidence: float = Field(default=0.5, ge=0, le=1)
 
 
+class GeneralChatResponse(BaseModel):
+    answer: str = Field(min_length=1, max_length=50000)
+    used_system_knowledge_ids: list[str] = Field(default_factory=list, max_length=5)
+
+
 class AgentDecision(BaseModel):
     decision: Literal["respond", "clarify", "invoke_tools", "propose_change"]
     request: RequestUnderstanding

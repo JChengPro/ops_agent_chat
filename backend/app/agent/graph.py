@@ -24,6 +24,7 @@ from app.policy.engine import PolicyEngine, permissions_for_role
 from app.runtime.executor import RuntimeExecutor
 from app.runtime.verification import runtime_records, verification_satisfied, verification_window
 from app.skills.registry import skill_registry
+from app.system_knowledge.registry import system_knowledge_registry
 
 
 def approval_summaries(capability_name: str, target: dict[str, Any], rollback: dict[str, Any] | None) -> tuple[str, str]:
@@ -308,6 +309,53 @@ class OpsAgentGraph:
                     "step_count": state.get("step_count", 0) + 1,
                 }
             try:
+                if not state.get("context", {}).get("project_selected") and not self.gateway.provider:
+                    matches = system_knowledge_registry.search(state["question"], limit=3)["items"]
+                    response = self.gateway.answer_general(
+                        db,
+                        run_id=state["run_id"],
+                        question=state["question"],
+                        history=state.get("history", []),
+                        system_knowledge=matches,
+                        cancel_check=lambda: self._run_cancelled(state["run_id"]),
+                    )
+                    request = {
+                        "goal": "answer",
+                        "scope": "general",
+                        "time_focus": "timeless",
+                        "requested_effect": "none",
+                        "subjects": [],
+                        "desired_output": "answer",
+                        "constraints": ["no project environment selected"],
+                        "confidence": 0.7,
+                        "summary": "通用聊天直接回答",
+                    }
+                    run.request_json = request
+                    run.plan_json = {
+                        **(run.plan_json or {}),
+                        "tool_calls": [],
+                        "source": "general_response",
+                        "system_knowledge_ids": response.used_system_knowledge_ids,
+                    }
+                    self._step(db, state, "decision", {
+                        "decision": "respond",
+                        "source": "general_response",
+                        "system_knowledge_count": len(response.used_system_knowledge_ids),
+                    })
+                    db.commit()
+                    return {
+                        "decision": {"decision": "respond", "request": request, "tool_calls": []},
+                        "pending_calls": [],
+                        "answer": response.answer,
+                        "claims": [{
+                            "text": response.answer,
+                            "claim_type": "general_knowledge",
+                            "evidence_ids": [],
+                            "confidence": 0.65,
+                        }],
+                        "system_knowledge_ids": response.used_system_knowledge_ids,
+                        "step_count": state.get("step_count", 0) + 1,
+                    }
                 decision = self.gateway.decide(
                     db,
                     run_id=state["run_id"],

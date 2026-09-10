@@ -21,6 +21,21 @@ class LLMSettingsUpdate(BaseModel):
 
 def _settings_out(profile: UserLLMSettings | None) -> dict:
     settings = get_settings()
+    deployment_default = {
+        "provider": settings.llm_provider,
+        "base_url": normalize_base_url(settings.llm_base_url),
+        "model": settings.llm_model,
+        "configured": settings.llm_configured,
+        "source": "deployment",
+    }
+    embedding_provider = "dashscope" if "dashscope.aliyuncs.com" in settings.embedding_base_url else "openai-compatible"
+    embedding = {
+        "provider": embedding_provider,
+        "model": settings.embedding_model,
+        "dimensions": settings.embedding_dimensions,
+        "configured": settings.embedding_configured,
+        "source": "deployment",
+    }
     if profile:
         return {
             "provider": profile.provider,
@@ -30,6 +45,8 @@ def _settings_out(profile: UserLLMSettings | None) -> dict:
             "api_key_source": "user" if profile.api_key_encrypted else "deployment",
             "source": "user",
             "allowed_base_urls": settings.llm_allowed_base_url_list,
+            "deployment_default": deployment_default,
+            "embedding": embedding,
         }
     return {
         "provider": settings.llm_provider,
@@ -39,6 +56,8 @@ def _settings_out(profile: UserLLMSettings | None) -> dict:
         "api_key_source": "deployment" if settings.llm_configured else "none",
         "source": "deployment",
         "allowed_base_urls": settings.llm_allowed_base_url_list,
+        "deployment_default": deployment_default,
+        "embedding": embedding,
     }
 
 

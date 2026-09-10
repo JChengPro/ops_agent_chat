@@ -89,7 +89,14 @@ class RuntimeExecutor:
                 )
             return self._record(db, action, "context", AdapterResult("success", "已读取项目上下文", data))
         if capability.executor == "experience":
-            data = search_experience(db, action.project_id, args["query"], args.get("limit", 5))
+            data = search_experience(
+                db,
+                action.project_id,
+                args["query"],
+                args.get("limit", 5),
+                environment_id=action.environment_id,
+                run_id=action.run_id,
+            )
             return self._record(db, action, "experience", AdapterResult("success", "已检索已验证的项目经验", data))
         if capability.executor == "system_knowledge":
             data = system_knowledge_registry.search(args["query"], args.get("limit", 5))
@@ -204,11 +211,13 @@ class RuntimeExecutor:
             bindings = rollback_spec.get("capability_bindings") or {}
             binding = bindings.get("action") if isinstance(bindings, dict) else None
             definition = None
+            definition_hash = ""
             if isinstance(binding, dict) and binding.get("name") == name:
+                definition_hash = str(binding.get("definition_hash") or "")
                 definition = registry.get_bound(
                     str(binding.get("name") or ""),
                     str(binding.get("version") or ""),
-                    str(binding.get("definition_hash") or ""),
+                    definition_hash,
                 )
             arguments = action.rollback_spec_json.get("arguments") or {}
             if not definition:
@@ -216,7 +225,7 @@ class RuntimeExecutor:
             rollback_resolved = {**resolved, "capability_bindings": bindings}
             rollback_action = Action(
                 id=str(uuid4()), run_id=action.run_id, capability_name=name, capability_version=definition.version,
-                capability_definition_hash=str(binding["definition_hash"]),
+                capability_definition_hash=definition_hash,
                 risk_level=definition.risk_level, approval_mode=definition.approval_mode,
                 policy_version=action.policy_version, config_revision=action.config_revision,
                 project_id=action.project_id, environment_id=action.environment_id, target_json=action.target_json,
@@ -263,11 +272,13 @@ class RuntimeExecutor:
                 return {"status": "failed", "summary": "Automatic recovery action failed", "change": changed}
             verifier_binding = bindings.get("verifier") if isinstance(bindings, dict) else None
             verifier = None
+            verifier_definition_hash = ""
             if definition.verifier and isinstance(verifier_binding, dict) and verifier_binding.get("name") == definition.verifier:
+                verifier_definition_hash = str(verifier_binding.get("definition_hash") or "")
                 verifier = registry.get_bound(
                     str(verifier_binding.get("name") or ""),
                     str(verifier_binding.get("version") or ""),
-                    str(verifier_binding.get("definition_hash") or ""),
+                    verifier_definition_hash,
                 )
             if not verifier:
                 rollback_action.status = "verification_failed"
@@ -276,7 +287,7 @@ class RuntimeExecutor:
             verify_resolved = {**resolved, "capability_bindings": {"action": verifier_binding}}
             verify_action = Action(
                 id=str(uuid4()), run_id=action.run_id, capability_name=verifier.name, capability_version=verifier.version,
-                capability_definition_hash=str(verifier_binding["definition_hash"]),
+                capability_definition_hash=verifier_definition_hash,
                 risk_level=verifier.risk_level, approval_mode=verifier.approval_mode,
                 policy_version=action.policy_version, config_revision=action.config_revision,
                 project_id=action.project_id, environment_id=action.environment_id, target_json=action.target_json,

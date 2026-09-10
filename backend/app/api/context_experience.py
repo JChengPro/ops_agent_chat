@@ -3,10 +3,10 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_project, require_project_permission
+from app.api.deps import require_environment, require_project, require_project_permission
 from app.context.service import entity_to_dict
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -39,6 +39,7 @@ class ExperiencePatch(BaseModel):
 class SearchPayload(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=5, ge=1, le=10)
+    environment_id: int | None = None
 
 
 def experience_out(item: ExperienceItem) -> dict:
@@ -106,4 +107,15 @@ def delete_experience(item_id: int, db: Session = Depends(get_db), user: User = 
 
 @router.post("/projects/{project_id}/experience/search")
 def search(project_id: int, payload: SearchPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    require_project(db, user, project_id); return search_experience(db, project_id, payload.query, payload.limit)
+    require_project(db, user, project_id)
+    if payload.environment_id is not None:
+        environment = require_environment(db, user, payload.environment_id)
+        if environment.project_id != project_id:
+            raise HTTPException(404, "Environment not found")
+    return search_experience(
+        db,
+        project_id,
+        payload.query,
+        payload.limit,
+        environment_id=payload.environment_id,
+    )

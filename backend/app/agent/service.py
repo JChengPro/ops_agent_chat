@@ -16,6 +16,7 @@ from app.audit.service import append_audit_event
 from app.agent.status import TERMINAL_RUN_STATUSES, cancel_unstarted_actions, mark_executing_actions_unknown
 from app.core.config import get_settings
 from app.monitoring.diagnostics import finalize_monitor_diagnosis
+from app.system_knowledge.registry import system_knowledge_registry
 from app.utils.public_config import public_config
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,27 @@ def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
     evidence_rows = list(db.scalars(select(RuntimeEvidence).where(RuntimeEvidence.run_id == run.id).order_by(RuntimeEvidence.created_at)).all())
     evidence_ids = [item.id for item in evidence_rows]
     context_source_ids, experience_item_ids = _available_source_ids(evidence_rows)
-    metadata = {"run_id": run.id, "run_status": run.status, "approvals": approval_payload, "evidence_ids": evidence_ids}
+    knowledge_ids = list(dict.fromkeys([
+        *result.get("system_knowledge_ids", []),
+        *_system_knowledge_ids(evidence_rows),
+    ]))
+    knowledge_sources = []
+    for item_id in knowledge_ids:
+        item = system_knowledge_registry.get(str(item_id))
+        if item:
+            knowledge_sources.append({
+                "id": item.id,
+                "title": item.title,
+                "document_id": item.document_id,
+                "document_title": item.document_title,
+            })
+    metadata = {
+        "run_id": run.id,
+        "run_status": run.status,
+        "approvals": approval_payload,
+        "evidence_ids": evidence_ids,
+        "system_knowledge_sources": knowledge_sources,
+    }
     if message:
         message.content = content; message.message_type = message_type; message.metadata_json = metadata
     else:
@@ -233,6 +254,22 @@ def _available_source_ids(evidence_rows: list[RuntimeEvidence]) -> tuple[set[int
                     if isinstance(item, dict) and isinstance(item.get("item_id"), int)
                 )
     return context_ids, experience_ids
+
+
+def _system_knowledge_ids(evidence_rows: list[RuntimeEvidence]) -> list[str]:
+    identifiers: list[str] = []
+    for evidence in evidence_rows:
+        if evidence.capability_name != "system.knowledge.search" or not isinstance(evidence.data_json, dict):
+            continue
+        items = evidence.data_json.get("items")
+        if not isinstance(items, list):
+            continue
+        identifiers.extend(
+            str(item["id"])
+            for item in items
+            if isinstance(item, dict) and item.get("id")
+        )
+    return identifiers
 
 
 def claim_run(db: Session, worker_id: str, run_id: str | None = None) -> AgentRun | None:

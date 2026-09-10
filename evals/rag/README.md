@@ -12,12 +12,15 @@
 - `build_dataset_views.py`：根据 `suite` 生成两个评测视图。
 - `build_index_manifest.py`：根据指定索引版本生成可复现 Chunk Manifest。
 - `validate_dataset.py`：只做结构、数量、ID、来源和分层分布检查，不调用 LLM。
+- `evaluate_retrieval_pipeline.py`：复用生产分块和排序，扫描 Chunk、阈值、来源多样性与上下文预算。
+- `evaluate_live_retrieval.py`：在真实 PostgreSQL 项目索引上评估检索质量与 P50/P95 延迟。
+- `evaluate_llm_reranker.py`：在完全相同的 Chunk 候选集上，对比自适应排序与真实 LLM listwise rerank。
 
 ## 重要约定
 
 1. Gold 使用 `source_id + section + fact_ids`，不使用 Chunk ID。改变 Chunk Size、Overlap、Embedding 或 reranker 后，评测基准仍然有效。
 2. `project_document` 只表示项目文档历史知识；当前运行状态必须来自 `runtime` Capability。
-3. `system_knowledge` 是开发者维护的只读知识。当前系统内置知识检索尚未实现，因此这些用例是待实现契约，不应伪报为 PASS。
+3. `system_knowledge` 是开发者维护、用户只读的独立知识源；它不进入项目文档索引，也不能作为实时状态证据。
 4. `dev` 可用于调参；`holdout` 只用于阶段性验收，不能根据其结果反复调参。
 5. `required_evidence` 表示回答必须覆盖的证据组。多个证据组用于计算 Evidence Coverage@K。
 6. `forbidden_claims` 是不能凭空生成的结论；`forbidden_capabilities` 是该请求绝不能调用的能力。
@@ -84,6 +87,24 @@ python evals/rag/evaluate_lexical_baseline.py
 PYTHONPATH=backend backend/.venv/bin/python evals/rag/evaluate_candidate_lexical.py
 PYTHONPATH=backend backend/.venv/bin/python evals/rag/evaluate_system_knowledge.py
 ```
+
+先运行生产兼容检索和真实数据库评测：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python evals/rag/evaluate_retrieval_pipeline.py
+PYTHONPATH=backend backend/.venv/bin/python evals/rag/evaluate_live_retrieval.py
+```
+
+配置可用模型后运行自适应和强制重排对照：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python evals/rag/evaluate_llm_reranker.py
+PYTHONPATH=backend backend/.venv/bin/python evals/rag/evaluate_llm_reranker.py --force-rerank
+```
+
+评测器只统计项目文档检索排序，不把它称作最终回答准确率。它固定召回候选，分别输出
+Evidence Hit@5、Evidence Recall@5、MRR、nDCG、失败次数和重排调用 P50/P95 延迟。
+结果写入 `evals/rag/reports/`。完整取舍见 `docs/rag/RAG_ENGINEERING_DECISIONS_AND_EXPERIMENTS.md`。
 
 该评测器刻意复现当前词法检索行为，只评估已验证的项目文档检索用例，
 并把来源级召回率和 MRR 明细写入 `evals/rag/reports/lexical-baseline-v1.json`。

@@ -1,0 +1,36 @@
+- id: approval_waiting
+  title: 任务正在等待人工审批
+  summary: 变更 Action 已准备完成，但尚未获得有效批准，因此不会执行。
+  tags: [approval, action, waiting, policy]
+  content: |
+    审批卡展示的是已经解析完成的变更快照，包括目标、影响、风险和 Action Hash。用户可以只批准需要执行的项目；未选中的 Action 会记录为未执行。审批通过仅表示允许进入执行阶段，不代表命令成功或最终状态验证通过。
+
+- id: approval_action_invalidated
+  title: 审批因 Action 或能力定义变化而失效
+  summary: 待审批内容与当前可执行快照不再一致，旧审批不能继续使用。
+  tags: [approval, action-hash, capability-hash, invalidated]
+  content: |
+    Action Hash 绑定最终参数、目标、运行时、配置版本、风险和能力定义。批准时以及实际执行前，系统都会重新计算并比较指纹。如果环境配置或 Capability 定义已经变化，系统必须使旧审批失效，重新生成 Action 并再次请求审批。
+
+    这不是普通重试错误。不要绕过 Hash 校验，也不要手工把失效审批改成 approved。
+
+- id: approval_already_consumed
+  title: 审批已被消费或重复提交
+  summary: 同一项批准只能有效恢复并执行一次，重复点击不会再次执行变更。
+  tags: [approval, idempotency, consumed, duplicate]
+  content: |
+    后端通过条件更新和消费时间保证并发请求中只有一次批准能恢复 Run。页面显示“批准中”时应等待状态刷新。若审批已经 consumed，应查看原 Run 和 Action 的最终状态，而不是创建重复执行。
+
+- id: worker_lease_expired
+  title: Agent Worker 租约或心跳超时
+  summary: 领取任务的 Worker 未在租约内维持心跳，系统无法确认正在执行的动作结果。
+  tags: [worker, lease, heartbeat, recovery, execution-unknown]
+  content: |
+    对只读任务可以重新发起调查；对可能已经开始的变更，超时不等于没有执行。系统应把执行中的 Action 标记为 execution_unknown，不自动重放命令，并通过新的只读检查确认目标现状。这样可避免网络抖动或 Worker 重启导致同一变更执行两次。
+
+- id: action_execution_unknown
+  title: Action 的执行结果未知
+  summary: 远程命令可能已经到达目标，但系统没有获得可信的最终结果。
+  tags: [action, execution-unknown, timeout, recovery]
+  content: |
+    常见原因包括 SSH 命令超时、Worker 失联或进程在收到远端响应前退出。此状态必须与 failed 区分，因为盲目重试可能重复变更。应先执行独立、只读、幂等的状态检查；只有确认原操作未生效并重新生成 Action 后，才考虑再次审批执行。

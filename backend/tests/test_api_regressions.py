@@ -335,6 +335,11 @@ def test_user_can_store_encrypted_model_settings_and_reset_to_deployment_default
     assert initial.status_code == 200
     assert initial.json()["source"] == "deployment"
     assert "api_key" not in initial.json()
+    assert initial.json()["embedding"]["source"] == "deployment"
+    assert initial.json()["embedding"]["dimensions"] == 1536
+    assert "api_key" not in initial.json()["embedding"]
+    assert initial.json()["deployment_default"]["source"] == "deployment"
+    assert "api_key" not in initial.json()["deployment_default"]
 
     secret = "sk-user-secret-that-must-not-be-returned"
     saved = client.put(
@@ -350,6 +355,7 @@ def test_user_can_store_encrypted_model_settings_and_reset_to_deployment_default
     assert saved.status_code == 200
     assert saved.json()["source"] == "user"
     assert saved.json()["api_key_source"] == "user"
+    assert saved.json()["deployment_default"]["model"] == initial.json()["model"]
     assert secret not in saved.text
     with SessionLocal() as db:
         profile = db.scalar(select(UserLLMSettings).where(UserLLMSettings.user_id == user.id))
@@ -844,6 +850,21 @@ def test_model_wait_can_be_cancelled_without_accepting_late_result():
             LLMGateway(SlowProvider()).decide(db, run_id=run_id, question="slow", history=[], context={}, capabilities=[], evidence=[], cancel_check=cancelled)
         assert time.monotonic() - started < 0.7
         db.rollback()
+
+
+def test_system_knowledge_evidence_ids_are_extracted_for_message_attribution():
+    from app.agent.service import _system_knowledge_ids
+
+    class Evidence:
+        capability_name = "system.knowledge.search"
+        data_json = {
+            "items": [
+                {"id": "ssh_host_key_mismatch", "title": "SSH 主机指纹不一致"},
+                {"id": "worker_lease_expired", "title": "Agent Worker 租约或心跳超时"},
+            ]
+        }
+
+    assert _system_knowledge_ids([Evidence()]) == ["ssh_host_key_mismatch", "worker_lease_expired"]
 
 
 def test_audit_chain_verifier_detects_and_reports_tampering():

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { validateRegistration } from "../src/authState.ts";
 import { applyApprovalBatchResult, chatMessagesRevision, environmentMonitoringStatus, humanCapability, humanEvidenceSummary, isRunPollingTerminal, markApprovalDecision, monitorEventSnapshot, monitorNoticeFor, rollbackDescription, shouldApplySessionResult, shouldNotifyMonitorEvent } from "../src/uiState.ts";
+import { modelSettingsSummary } from "../src/modelSettingsState.ts";
 
 test("registration form validates identity, password and optional invite code", () => {
   const valid = {username: "new-user", email: "new@example.test", password: "secure-pass-123", passwordConfirmation: "secure-pass-123", inviteCode: "invite"};
@@ -12,6 +13,37 @@ test("registration form validates identity, password and optional invite code", 
   assert.match(validateRegistration({...valid, password: "password", passwordConfirmation: "password"}, false), /10/);
   assert.match(validateRegistration({...valid, passwordConfirmation: "secure-pass-456"}, false), /不一致/);
   assert.match(validateRegistration({...valid, inviteCode: ""}, true), /注册码/);
+});
+
+test("model settings summary identifies the effective per-account model", () => {
+  assert.deepEqual(modelSettingsSummary({
+    provider: "dashscope", base_url: "https://example.test/v1", model: "qwen-plus",
+    api_key_configured: true, api_key_source: "user", source: "user", allowed_base_urls: [],
+    deployment_default: {provider: "deepseek", base_url: "https://api.deepseek.com", model: "deepseek-chat", configured: true, source: "deployment"},
+    embedding: {provider: "dashscope", model: "qwen3.7-text-embedding", dimensions: 1536, configured: true, source: "deployment"},
+  }), {
+    agent: {
+      modelLabel: "DashScope · qwen-plus",
+      sourceLabel: "当前账号的个人配置",
+      statusLabel: "API Key 已配置（个人）",
+    },
+    deployment: {
+      modelLabel: "DeepSeek · deepseek-chat",
+      sourceLabel: "个人配置删除后自动使用",
+      statusLabel: "服务器默认 API Key 已配置",
+    },
+    embedding: {
+      modelLabel: "DashScope · qwen3.7-text-embedding",
+      sourceLabel: "服务器 RAG 配置 · 1536 维",
+      statusLabel: "已配置",
+    },
+  });
+  assert.equal(modelSettingsSummary({
+    provider: "deepseek", base_url: "https://example.test", model: "deepseek-v4-pro",
+    api_key_configured: true, api_key_source: "deployment", source: "deployment", allowed_base_urls: [],
+    deployment_default: {provider: "deepseek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", configured: true, source: "deployment"},
+    embedding: {provider: "openai-compatible", model: "text-embedding", dimensions: 1536, configured: false, source: "deployment"},
+  }).agent.sourceLabel, "服务器部署默认配置");
 });
 
 test("run polling stops for approval and terminal states", () => {
@@ -74,6 +106,8 @@ test("message polling detects final answers and approval state changes", () => {
   assert.notEqual(chatMessagesRevision([base]),chatMessagesRevision([completed]));
   assert.notEqual(chatMessagesRevision([base]),chatMessagesRevision([approved]));
   assert.equal(chatMessagesRevision([completed]),chatMessagesRevision([{...completed}]));
+  const withKnowledge = {...completed, metadata_json: {...completed.metadata_json, system_knowledge_sources: [{id:"ssh_host_key_mismatch",title:"SSH 主机指纹不一致"}]}};
+  assert.notEqual(chatMessagesRevision([completed]), chatMessagesRevision([withKnowledge]));
 });
 
 test("activity labels localize capabilities and historical English evidence", () => {

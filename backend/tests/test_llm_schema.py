@@ -3,7 +3,7 @@ import json
 from pydantic import ValidationError
 
 from app.llm.gateway import _bounded_items, _normalize_decision_payload
-from app.llm.schemas import AgentDecision
+from app.llm.schemas import AgentDecision, GeneralChatResponse
 
 
 def request(**overrides):
@@ -97,3 +97,11 @@ def test_non_response_claims_are_removed_during_normalization():
     decision = AgentDecision.model_validate(normalized)
     assert decision.request.requested_effect == "change"
     assert decision.claims == []
+
+
+def test_general_chat_response_has_a_small_explicit_knowledge_reference_contract():
+    response = GeneralChatResponse.model_validate({
+        "answer": "请先通过可信渠道核对目标服务器的主机指纹。",
+        "used_system_knowledge_ids": ["ssh_host_key_mismatch"],
+    })
+    assert response.used_system_knowledge_ids == ["ssh_host_key_mismatch"]

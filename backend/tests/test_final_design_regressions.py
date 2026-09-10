@@ -15,13 +15,14 @@ from app.api.approvals import ApprovalDecision, decide as decide_approval
 from app.context.jobs import claim_collector_run, process_collector_run
 from app.core.database import SessionLocal
 from app.core.security import create_access_token, hash_password
+from app.experience.service import index_experience
 from app.main import app
 from app.models.action import Action, Approval
 from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.context import ContextSource
 from app.models.evidence import EvidenceClaim, EvidenceClaimLink
-from app.models.experience import ExperienceItem
+from app.models.experience import ExperienceChunk, ExperienceItem
 from app.models.project import Environment, Project
 from app.models.user import User
 from app.policy.action_hash import action_snapshot, compute_action_hash, configuration_revision
@@ -224,6 +225,99 @@ def test_experience_edit_revokes_verified_status_and_delete_archives(client: Tes
     assert deleted.status_code == 200 and deleted.json()["archived"] is True
     with SessionLocal() as db:
         assert db.get(ExperienceItem, item_id).trust_status == "archived"
+
+
+def test_experience_search_isolates_environment_specific_documents(client: TestClient):
+    user = _user()
+    headers = _headers(user)
+    with SessionLocal() as db:
+        project = Project(owner_id=user.id, name=f"environment-rag-{uuid4().hex[:8]}")
+        db.add(project)
+        db.flush()
+        environment_a = Environment(project_id=project.id, name="a", runtime_type="manual")
+        environment_b = Environment(project_id=project.id, name="b", runtime_type="manual")
+        db.add_all([environment_a, environment_b])
+        db.flush()
+        documents = [
+            ExperienceItem(
+                project_id=project.id,
+                environment_id=environment_id,
+                title=title,
+                content=f"# Isolation\n\nragisolationtoken {title}",
+                trust_status="verified",
+                created_by=user.id,
+                verified_by=user.id,
+                verified_at=datetime.now(timezone.utc),
+            )
+            for environment_id, title in (
+                (None, "global-document"),
+                (environment_a.id, "environment-a-document"),
+                (environment_b.id, "environment-b-document"),
+            )
+        ]
+        db.add_all(documents)
+        db.flush()
+        for document in documents:
+            index_experience(db, document)
+        db.commit()
+        project_id = project.id
+        environment_a_id = environment_a.id
+
+    project_only = client.post(
+        f"/api/projects/{project_id}/experience/search",
+        headers=headers,
+        json={"query": "ragisolationtoken", "limit": 10},
+    )
+    assert project_only.status_code == 200
+    assert {item["title"] for item in project_only.json()["items"]} == {"global-document"}
+
+    selected_environment = client.post(
+        f"/api/projects/{project_id}/experience/search",
+        headers=headers,
+        json={"query": "ragisolationtoken", "limit": 10, "environment_id": environment_a_id},
+    )
+    assert selected_environment.status_code == 200
+    assert {item["title"] for item in selected_environment.json()["items"]} == {
+        "global-document",
+        "environment-a-document",
+    }
+
+
+def test_index_experience_backfills_unchanged_chunk_without_embedding(monkeypatch):
+    user = _user()
+    with SessionLocal() as db:
+        project = Project(owner_id=user.id, name=f"embedding-backfill-{uuid4().hex[:8]}")
+        db.add(project)
+        db.flush()
+        document = ExperienceItem(
+            project_id=project.id,
+            title="backfill",
+            content="# Backend\n\nCheck backend health.",
+            trust_status="verified",
+            created_by=user.id,
+            verified_by=user.id,
+            verified_at=datetime.now(timezone.utc),
+        )
+        db.add(document)
+        db.flush()
+        monkeypatch.setattr("app.experience.service.configured_embedding_provider", lambda: None)
+        index_experience(db, document)
+        db.flush()
+        chunk = db.scalar(select(ExperienceChunk).where(ExperienceChunk.experience_item_id == document.id))
+        assert chunk is not None and chunk.embedding is None
+
+        class Embedder:
+            dimensions = 1536
+
+            def embed(self, texts):
+                return [[0.0] * self.dimensions for _ in texts]
+
+        result = index_experience(db, document, embedder=Embedder())
+        db.flush()
+        db.refresh(chunk)
+
+        assert result["unchanged"] == 1
+        assert chunk.embedding is not None
 
 
 def test_claim_link_requires_exactly_one_source_and_source_specific_uniqueness():

@@ -21,6 +21,7 @@ class AgentState(TypedDict, total=False):
     evidence: list[dict[str, Any]]
     answer: str
     claims: list[dict[str, Any]]
+    system_knowledge_ids: list[str]
     status: str
     tool_call_count: int
     step_count: int

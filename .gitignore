@@ -50,3 +50,7 @@ Thumbs.db
 
 # Local implementation plan
 IMPLEMENTATION_PLAN.md
+
+# Superseded local RAG experiment outputs
+evals/rag/reports/llm-reranker-v1.json
+evals/rag/reports/llm-reranker-chunks-v2.json

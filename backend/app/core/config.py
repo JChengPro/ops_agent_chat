@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="deepseek", alias="LLM_PROVIDER")
     llm_model: str = Field(default="deepseek-v4-pro", alias="LLM_MODEL")
     llm_allowed_base_urls: str = Field(
-        default="https://api.deepseek.com,https://api.openai.com/v1",
+        default="https://api.deepseek.com,https://api.openai.com/v1,https://dashscope.aliyuncs.com/compatible-mode/v1",
         alias="LLM_ALLOWED_BASE_URLS",
     )
     llm_credential_encryption_key: str = Field(default="", alias="LLM_CREDENTIAL_ENCRYPTION_KEY")
@@ -45,7 +45,17 @@ class Settings(BaseSettings):
     embedding_base_url: str = Field(default="https://api.openai.com/v1", alias="EMBEDDING_BASE_URL")
     embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
     embedding_dimensions: int = Field(default=1536, ge=1536, le=1536, alias="EMBEDDING_DIMENSIONS")
+    embedding_batch_size: int = Field(default=20, ge=1, le=100, alias="EMBEDDING_BATCH_SIZE")
     embedding_timeout_seconds: int = Field(default=30, ge=5, le=180, alias="EMBEDDING_TIMEOUT_SECONDS")
+
+    rerank_enabled: bool = Field(default=True, alias="RERANK_ENABLED")
+    rerank_model: str = Field(default="", alias="RERANK_MODEL")
+    rerank_candidate_limit: int = Field(default=20, ge=5, le=50, alias="RERANK_CANDIDATE_LIMIT")
+    rerank_timeout_seconds: int = Field(default=30, ge=5, le=180, alias="RERANK_TIMEOUT_SECONDS")
+    rerank_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400, alias="RERANK_CACHE_TTL_SECONDS")
+    rerank_cache_max_entries: int = Field(default=256, ge=1, le=10000, alias="RERANK_CACHE_MAX_ENTRIES")
+    rag_max_chunks_per_item: int = Field(default=2, ge=1, le=10, alias="RAG_MAX_CHUNKS_PER_ITEM")
+    rag_context_max_chars: int = Field(default=9000, ge=1000, le=60000, alias="RAG_CONTEXT_MAX_CHARS")
 
     admin_username: str = "admin"
     admin_email: str = "admin@example.com"

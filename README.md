@@ -39,6 +39,7 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 ### 聊天与 Agent
 
 - 支持通用聊天、项目问答、实时调查和多步骤诊断。
+- 无项目的通用聊天使用紧凑回答 Schema，不生成完整运维决策对象；相关问题会先在本地检索系统知识，减少无效上下文和模型等待。
 - 使用 LangGraph 组织决策、工具调用、审批暂停、恢复和结果生成。
 - 在 Capability 约束内可选择一个版本化 Skill 作为处理流程；Skill 只提供操作步骤，不授予权限，未命中时回退到原 Agent 流程。
 - LLM 输出必须符合结构化 Schema，不能自行决定权限或风险等级。
@@ -91,7 +92,11 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 - 项目文档按 Markdown 标题语义分块，使用稳定 Chunk ID 增量更新；未变化分块不会重复生成向量。
 - 只有经过确认的 `verified` 项目文档可以被 Agent 检索，且按项目隔离。
 - 配置 Embedding 后使用 pgvector 向量召回与词法召回，并通过 RRF 融合；Embedding 未配置或调用失败时自动降级到词法检索。
-- 系统内置知识由开发者通过仓库定义维护，用户只能查看和检索，不能在网页中修改。
+- 候选中的唯一文档数大于 Top-K 时，Agent 才使用当前用户配置的模型做 listwise rerank；小语料直接跳过，避免没有实际收益的慢模型调用。
+- 重排结果使用绑定项目、Environment、模型、Query 和 Chunk 内容 Hash 的短期缓存；模型超时、结构错误或缓存失效时保留原 RRF 顺序，不中断主流程。
+- 可通过 `RERANK_*` 和 `RAG_*` 环境变量控制候选数、超时、缓存、每文档分块上限和上下文软预算。当前 DeepSeek 对照数据与取舍见 `docs/rag/RAG_ENGINEERING_DECISIONS_AND_EXPERIMENTS.md`。
+- 系统内置知识由开发者通过仓库定义维护，用户只能查看和检索，不能在网页中修改；展示层合并为 SSH、Docker 与运行时、审批与执行、主动巡检、模型与 RAG 五份分类文档，检索层保留细粒度知识条目。
+- 回答使用系统内置知识时会显示具体条目标题；引用可以点击并打开所属分类文档、定位到对应条目。新产生的通用回答未使用时也会明确标注，避免来源状态不透明。
 - 项目文档和系统知识都是辅助上下文，不能证明当前运行状态，也不能覆盖 Runtime Evidence、Capability、Policy 或审批要求。
 
 ## 系统架构
@@ -163,7 +168,7 @@ LLM_API_KEY=your-api-key
 LLM_BASE_URL=https://api.deepseek.com
 LLM_PROVIDER=deepseek
 LLM_MODEL=your-actual-model-name
-LLM_ALLOWED_BASE_URLS=https://api.deepseek.com,https://api.openai.com/v1
+LLM_ALLOWED_BASE_URLS=https://api.deepseek.com,https://api.openai.com/v1,https://dashscope.aliyuncs.com/compatible-mode/v1
 
 VIDEOHUB_WORKDIR=/home/your-user/project
 VIDEOHUB_SSH_HOST=host.docker.internal
@@ -534,9 +539,9 @@ docker-compose.yml         本地一键部署
 | 状态 | 能力 |
 | --- | --- |
 | Stable 候选 | 认证、注册、项目与会话管理、异步 Run、结构化 Decision、Registry 编译 |
-| Beta | LangGraph 多步调查、Skill 选择、Docker Runtime、审批变更、稳定窗口验证、Evidence/Claim/Audit、Context、项目文档混合检索、系统知识、主动巡检、工作台 |
+| Beta | LangGraph 多步调查、Skill 选择、Docker Runtime、审批变更、稳定窗口验证、Evidence/Claim/Audit、Context、项目文档混合检索与重排、系统知识、主动巡检、工作台 |
 | Experimental | Kubernetes 和 systemd 真实执行 |
-| Planned | 文档审核闭环、检索重排器、候选巡检规则、外部告警渠道 |
+| Planned | 文档审核闭环、候选巡检规则、外部告警渠道 |
 
 成熟度描述不等于生产承诺。每个 Commit 是否达到发布门槛，应以对应 GitHub Actions、隔离集成测试和目标环境验收结果为准。
 
