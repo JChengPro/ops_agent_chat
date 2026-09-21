@@ -25,7 +25,7 @@ def _stop(*_args) -> None:
     stopping = True
 
 
-def main() -> None:
+def main(*, maintenance_only: bool = False) -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     worker_id = default_worker_id()
@@ -63,7 +63,7 @@ def main() -> None:
                             db.rollback()
                             logger.exception("Active monitoring failed for environment %s", monitor_environment_id)
                     collector_run = claim_collector_run(db, worker_id) if prefer_collector else None
-                    run = claim_run(db, worker_id) if collector_run is None else None
+                    run = claim_run(db, worker_id) if collector_run is None and not maintenance_only else None
                     if run:
                         process_claimed_run(db, agent, run, worker_id)
                     if not run and collector_run is None:
@@ -96,4 +96,8 @@ def _worker_heartbeat(db, worker_id: str) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if get_settings().task_broker == "rabbitmq":
+        from app.broker_worker import main as consume
+        consume()
+    else:
+        main()

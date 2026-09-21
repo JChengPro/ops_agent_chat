@@ -2,9 +2,25 @@
 
 Ops Agent Chat 是一个面向个人开发者和小团队的聊天式智能运维工作台。
 
-它将自然语言理解、实时状态检查、受控变更、人工审批、执行验证和审计记录放进同一条 Agent 工作流，让用户可以通过对话调查项目问题，同时保留明确的安全边界。
+它根据问题选择知识查询或完整 Agent 流程，将自然语言理解、实时状态检查、受控变更、人工审批、执行验证和审计记录连接起来，让用户可以通过对话调查项目问题，同时保留明确的安全边界。
 
 > 当前项目适合本地开发、功能演示和测试环境验证。连接生产环境前，应根据实际基础设施完成权限收敛、能力验收和故障演练。
+
+文档分工：本 README 用于项目概览与快速开始；[当前详细设计](docs/architecture/CURRENT_DESIGN.md) 按“总体架构 → 子系统设计 → 部署与验证”展开，覆盖真实调用链、数据模型、RAG、Redis/RabbitMQ、安全执行和故障恢复。
+
+## 本轮升级与实测
+
+当前 Compose 默认启用 RabbitMQ 任务投递、Redis 计算缓存和保守的 Knowledge Path，并提供按 `run_id` 查询耗时的 Profiling 接口。
+
+| 同一历史经验查询，模型均为 qwen-plus | 服务端 AgentRun 耗时 |
+| --- | ---: |
+| 原流程，单次基线 | 53.16 秒 |
+| 升级后，三次实测 | 13.15 / 11.84 / 11.93 秒 |
+| 升级后中位数 | 11.93 秒，较基线降低 77.6% |
+
+主要收益来自知识查询减少模型决策次数及压缩回答上下文；Redis 减少重复 Embedding，RabbitMQ 改善任务投递。上述结果来自一个问题的小样本实验，不是所有请求的延迟承诺；实时诊断、变更与审批仍走原流程，剩余主要耗时仍在回答模型。
+
+实现、配置与回退见 [升级说明](docs/implementation/07-redis-rabbitmq-knowledge-path.md)；样本、故障演练、验证范围和已知问题见 [实测报告](test-results/13-v2-latency.md)。
 
 ## 项目解决什么问题
 
@@ -19,11 +35,11 @@ Agent 理解目标、范围和操作影响
     ↓
 Policy Engine 检查权限、风险和审批要求
     ↓
-Runtime Adapter 通过 SSH 获取状态或执行操作
+需要审批的变更等待用户批准
     ↓
-高风险变更等待用户批准
+Runtime Executor 检索知识、读取状态或执行已授权操作
     ↓
-执行后验证真实目标状态
+变更执行后验证真实目标状态
     ↓
 保存 Evidence、Claim 和 Audit
     ↓
@@ -40,6 +56,7 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 
 - 支持通用聊天、项目问答、实时调查和多步骤诊断。
 - 无项目的通用聊天使用紧凑回答 Schema，不生成完整运维决策对象；相关问题会先在本地检索系统知识，减少无效上下文和模型等待。
+- 明确的项目历史经验或文档查询可进入只读 Knowledge Path：受治理的检索后调用一次回答模型，保留 Policy、Action、Evidence 和 Claim；实时诊断与变更继续走原流程。
 - 使用 LangGraph 组织决策、工具调用、审批暂停、恢复和结果生成。
 - 在 Capability 约束内可选择一个版本化 Skill 作为处理流程；Skill 只提供操作步骤，不授予权限，未命中时回退到原 Agent 流程。
 - LLM 输出必须符合结构化 Schema，不能自行决定权限或风险等级。
@@ -65,6 +82,7 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 
 - FastAPI 请求只创建 `AgentRun` 并返回 `202 Accepted`。
 - 独立 Worker 通过数据库租约、心跳和原子抢占领取任务。
+- Compose 默认使用 PostgreSQL 事务 Outbox + RabbitMQ 投递任务，版本化通知避免重复执行；巡检与采集由独立 Maintenance 进程处理。
 - 慢模型和慢 SSH 不会长期占用 HTTP 请求。
 - 运行中的任务可以取消，晚到结果不能覆盖 `cancelled` 状态。
 - Worker 租约过期后会按安全规则恢复或终止任务，避免重复执行变更。
@@ -79,7 +97,7 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 
 ### 主动巡检
 
-- Worker 可以周期性检查已启用环境的服务状态。
+- Compose 的 Maintenance 进程周期性检查已启用环境的服务状态，诊断 Run 交给 Agent Worker；旧 PostgreSQL 轮询模式由 Worker 同时承担巡检。
 - 主动巡检与低风险自动修复是两个独立开关。
 - 当前环境的两个开关状态会常驻显示在聊天顶部和活动面板，配置变更会写入 Audit。
 - 同一轮巡检复用一个 SSH 会话，巡检完成后立即关闭，减少重复握手造成的延迟。
@@ -94,10 +112,19 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 - 配置 Embedding 后使用 pgvector 向量召回与词法召回，并通过 RRF 融合；Embedding 未配置或调用失败时自动降级到词法检索。
 - 候选中的唯一文档数大于 Top-K 时，Agent 才使用当前用户配置的模型做 listwise rerank；小语料直接跳过，避免没有实际收益的慢模型调用。
 - 重排结果使用绑定项目、Environment、模型、Query 和 Chunk 内容 Hash 的短期缓存；模型超时、结构错误或缓存失效时保留原 RRF 顺序，不中断主流程。
+- Redis 共享查询 Embedding 和重排计算缓存；缓存故障自动回退，单次缓存 I/O 等待上限包含 DNS。升级设计、开关与回退见 [实施文档](docs/implementation/07-redis-rabbitmq-knowledge-path.md)，实测见 [性能报告](test-results/13-v2-latency.md)。
 - 可通过 `RERANK_*` 和 `RAG_*` 环境变量控制候选数、超时、缓存、每文档分块上限和上下文软预算。当前 DeepSeek 对照数据与取舍见 `docs/rag/RAG_ENGINEERING_DECISIONS_AND_EXPERIMENTS.md`。
-- 系统内置知识由开发者通过仓库定义维护，用户只能查看和检索，不能在网页中修改；展示层合并为 SSH、Docker 与运行时、审批与执行、主动巡检、模型与 RAG 五份分类文档，检索层保留细粒度知识条目。
+- 系统内置知识由开发者通过仓库定义维护，用户只能查看和检索，不能在网页中修改；按系统功能与账号、项目接入与文档管理、部署维护、SSH、Docker 与运行时、审批与执行、主动巡检、模型与 RAG 八份分类文档展示。每份文档包含多个可检索小节，接入和排障指南说明操作位置、步骤及验收方式。
+- 内置知识当前按条目进行词法检索，与项目文档的向量混合检索链路不同；新增知识需更新 Backend 和 Worker 镜像，不会自动从用户聊天生成巡检规则。
 - 回答使用系统内置知识时会显示具体条目标题；引用可以点击并打开所属分类文档、定位到对应条目。新产生的通用回答未使用时也会明确标注，避免来源状态不透明。
 - 项目文档和系统知识都是辅助上下文，不能证明当前运行状态，也不能覆盖 Runtime Evidence、Capability、Policy 或审批要求。
+
+### 性能观测
+
+- 独立 `agent_run_profile_spans` 保存阶段时间、耗时、状态、轮次、模型 Token 用量和已有 RAG 元数据，不复用 AgentStep 或 Audit。
+- `GET /api/agent-runs/{run_id}/profile` 返回时间线与 Top 耗时阶段，沿用 Run 所有者鉴权。
+- 覆盖队列等待、上下文、能力解析、Skill、每轮决策与实际模型请求、RAG 子阶段、工具执行、回答持久化及 Run 总耗时；嵌套阶段不能直接相加。
+- Profiling 写入失败不应中断业务。服务端完成时间与前端约 800ms 轮询产生的观察延迟分开统计，本轮未改为流式推送。
 
 ## 系统架构
 
@@ -106,34 +133,45 @@ React Frontend
       │
       ▼
 FastAPI API
-      │ 创建 AgentRun
+      │ 同一事务创建 AgentRun + Outbox
       ▼
-PostgreSQL Queue / Worker Lease
-      │
-      ▼
-LangGraph Agent
-      │
-      ├── Skill Registry（可选流程约束）
-      ├── LLM Gateway
-      ├── Context / Project Documents / System Knowledge
-      ├── Capability Registry
-      └── Policy Engine
-              │
-              ▼
-      Action / Approval
-              │
-              ▼
-      Runtime Executor
-              │
-              ├── SSH Transport
-              ├── Docker Compose Adapter
-              ├── Kubernetes Adapter
-              ├── systemd Adapter
-              ├── Host Adapter
-              └── HTTP Adapter
-                      │
-                      ▼
-          Evidence / Claim / Audit
+PostgreSQL → Outbox Publisher → RabbitMQ
+                                   │ 通知
+                                   ▼
+                           Worker 原子领取 Run
+                                   │ PostgreSQL 租约与状态
+                                   ▼
+                            LangGraph Agent
+                                   │
+              ┌────────────────────┴───────────────────┐
+              ▼                                        ▼
+      Knowledge Path                          原 Skill / Decision Loop
+      固定 experience.search                  实时读取、诊断、变更与歧义请求
+              │                                        │
+              └────────────────────┬───────────────────┘
+                                   ▼
+                    Capability / Policy / Action
+                                   │ 必要时审批
+                                   ▼
+                          Runtime Executor
+                                   │
+                 ┌─────────────────┴──────────────────┐
+                 ▼                                    ▼
+         Experience Search                    已注册的 Runtime Adapter
+         Lexical + Vector + RRF                SSH / Docker / K8s /
+         可选 Rerank                            systemd / Host / HTTP
+                 │
+         Redis 共享计算缓存
+                 │                                    │
+                 └─────────────────┬──────────────────┘
+                                   ▼
+                       Runtime Evidence / Audit
+                                   │
+                                   ▼
+                     模型回答 / Claim / Answer 持久化
+
+Maintenance：独立执行采集、巡检、审批过期与租约恢复
+Profiling：独立记录 Run 时间线和阶段耗时
 ```
 
 ## 技术栈
@@ -143,6 +181,7 @@ LangGraph Agent
 | 后端 | Python、FastAPI、SQLAlchemy 2、Pydantic 2、Alembic |
 | Agent | LangGraph、结构化 LLM Decision、OpenAI-compatible SDK |
 | 数据库 | PostgreSQL 16、pgvector 镜像 |
+| 投递与缓存 | RabbitMQ、Redis；PostgreSQL 保留任务状态与安全边界 |
 | Runtime | Paramiko、Docker Compose、Kubernetes、systemd、HTTP |
 | 前端 | React、TypeScript、Vite、Lucide Icons、Nginx |
 | 部署 | Docker Compose |
@@ -183,6 +222,8 @@ VIDEOHUB_SSH_HOST_FINGERPRINT=SHA256:your-host-key-fingerprint
 用户填写的 API Key 会在服务端加密保存，接口只返回“是否已配置”，不会把原始 Key 返回浏览器。自定义模型地址必须先加入部署端的 `LLM_ALLOWED_BASE_URLS`，避免任意地址被用作服务端请求目标。
 
 `POSTGRES_PASSWORD` 与 `DATABASE_URL` 中的密码必须一致。密码包含 `@`、`:`、`/` 等 URL 特殊字符时，需要在 `DATABASE_URL` 中进行 URL 编码。已经初始化过的 PostgreSQL 数据卷不会因为修改 `POSTGRES_PASSWORD` 自动修改数据库内的密码。
+
+RabbitMQ 使用 `RABBITMQ_USER`、`RABBITMQ_PASSWORD` 初始化账号，`RABBITMQ_URL` 中的凭据必须与之匹配，特殊字符同样需要 URL 编码。已有 RabbitMQ 数据卷不会因为修改初始化变量自动更换账号密码。Redis 和 RabbitMQ 默认只在 Compose 内网使用，不发布宿主机端口。
 
 ### 2. 准备 SSH 连接
 
@@ -231,17 +272,25 @@ docker compose up -d --build
 
 ```bash
 docker compose ps
-curl http://localhost:8000/health
+curl -fsS http://localhost:8000/ready
 ```
 
 Compose 会启动：
 
 - `postgres`：业务数据、审计数据和 LangGraph checkpoint；
+- `rabbitmq`：持久化任务通知、重试与死信队列；
+- `redis`：可重算的查询 Embedding 与 Rerank 缓存；
 - `backend`：认证、项目、聊天、审批和查询 API；
-- `worker`：执行 Agent、SSH、巡检和恢复任务；
+- `outbox`：将已提交的数据库 Outbox 事件投递到 RabbitMQ；
+- `worker`：消费通知，通过数据库原子领取 Run，执行 Agent 与受治理工具；
+- `maintenance`：采集、巡检、审批过期及租约恢复；
 - `frontend`：React 静态页面和 Nginx API 反向代理。
 
 后端启动时会执行 Alembic 迁移，并初始化管理员、默认项目、环境、Capability 版本和经验种子。
+
+前端 Nginx 通过 Docker DNS 动态解析 Backend（约 5 秒刷新），后端容器重建并更换 IP 后不需要重启前端来更新代理地址。验收时应同时检查 `http://localhost:5175/api/auth/registration`，仅首页返回 200 不能证明 API 代理可用。
+
+默认保留一个 Agent 消费者。多个 Worker 会允许不同 Run 同时操作同一环境，本轮尚未增加跨 Run 的变更串行化，不应仅为减少排队而直接扩大变更执行并发。升级已有实例时先等待执行中的操作结束，备份数据库，再运行上述构建启动命令；无需删除数据卷。
 
 ## 用户、注册与登录会话
 
@@ -274,6 +323,8 @@ JWT_REMEMBER_EXPIRE_MINUTES=43200
 
 PostgreSQL 数据保存在 Docker 命名卷 `ops_agent_postgres_data`。停止或重建应用容器不会删除账号和聊天数据；执行 `docker compose down -v` 会删除数据卷，不能用于普通升级。
 
+RabbitMQ 使用命名卷 `ops_agent_rabbitmq_data` 保存持久化队列；任务权威状态和 Outbox 仍在 PostgreSQL。Redis 不持久化，重启后通过正常计算重新填充缓存。
+
 备份示例：
 
 ```bash
@@ -283,6 +334,18 @@ docker compose exec -T postgres \
 ```
 
 ## Agent 执行模型
+
+### 历史经验与文档问答
+
+明确的知识查询先由确定性规则识别，在已有权限允许 `experience.search` 时进入只读路径：
+
+```text
+问题 → 路由 → 受治理的 experience.search → 有界证据上下文 → 一次回答模型 → Claim / Answer
+```
+
+此路径省去 Skill Selection LLM 和首次工具选择 LLM，不访问实时服务器，不允许变更工具。Router 只选择流程，不授予权限；检索仍经过 Capability、Policy、Action 和 Evidence 链路。来源不足时应说明缺口，通用排障文档不能当作历史事件已发生的证明。
+
+当前是一次有界检索，不等同于多轮调查。实时问题、变更意图、上下文不明确的请求和监控诊断保留原流程；尚未全面实现独立的 Read / Diagnosis / Safe 四级路由或并行只读工具。
 
 ### 只读调查
 
@@ -361,6 +424,14 @@ Docker Compose 变更会继续检查：
 | 变量 | 用途 |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接地址 |
+| `TASK_BROKER` | Compose 默认 `rabbitmq`；直接运行应用默认 `postgres`，API 与 Worker 应统一配置 |
+| `RABBITMQ_USER` / `RABBITMQ_PASSWORD` | 新 RabbitMQ 数据卷的初始化账号密码 |
+| `RABBITMQ_URL` | 应用使用的 AMQP 地址，凭据需与 Broker 匹配 |
+| `REDIS_URL` | 共享计算缓存地址，Compose 默认 `redis://redis:6379/0` |
+| `EMBEDDING_CACHE_TTL_SECONDS` | 查询向量缓存 TTL，默认 86400 秒，设为 0 禁用 |
+| `KNOWLEDGE_FAST_PATH_ENABLED` | 是否启用保守的知识查询路径，默认 `true` |
+| `KNOWLEDGE_CONTEXT_MAX_CHARS` | 知识回答的来源正文字数预算，默认 6000 |
+| `KNOWLEDGE_ANSWER_MODEL` / `KNOWLEDGE_ANSWER_BASE_URL` | 可选知识回答模型覆盖，仅对匹配的已配置供应商地址生效；默认不覆盖 |
 | `POSTGRES_PASSWORD` | 初始化 PostgreSQL 用户的密码，需与 `DATABASE_URL` 一致 |
 | `POSTGRES_BIND_ADDRESS` | PostgreSQL 宿主机监听地址，默认 `127.0.0.1` |
 | `WEB_BIND_ADDRESS` / `WEB_PORT` | HTTP Web 入口监听地址和端口 |
@@ -382,11 +453,13 @@ Docker Compose 变更会继续检查：
 | `REGISTRATION_INVITE_CODE` | 可选注册邀请码 |
 | `VIDEOHUB_DEPLOY_TYPE` | 默认运行时类型 |
 | `VIDEOHUB_WORKDIR` | 目标服务器上的项目目录 |
-| `VIDEOHUB_SSH_KEY_PATH` | Backend 与 Worker 容器中的私钥引用 |
+| `VIDEOHUB_SSH_KEY_PATH` | Backend、Worker 与 Maintenance 容器中的私钥引用 |
 | `VIDEOHUB_SSH_HOST_FINGERPRINT` | SSH 目标主机指纹 |
 | `SSH_STRICT_HOST_KEY_CHECKING` | 是否强制校验 SSH 主机身份 |
 
 完整配置及默认值以 [.env.example](.env.example) 为准。
+
+快速路径可以通过 `KNOWLEDGE_FAST_PATH_ENABLED=false` 关闭并重建相关应用容器。切回 PostgreSQL 投递时还需要停用独立 Outbox / Maintenance，具体操作见 [回退说明](docs/implementation/07-redis-rabbitmq-knowledge-path.md#configuration-and-rollback)。
 
 ## API 概览
 
@@ -400,6 +473,7 @@ Docker Compose 变更会继续检查：
 /api/connections
 /api/chat-sessions
 /api/agent-runs
+/api/agent-runs/{run_id}/profile
 /api/actions
 /api/approvals
 /api/evidence
@@ -422,6 +496,13 @@ completed / failed / cancelled
 
 请求 Schema 和响应结构以运行后的 OpenAPI 页面为准。
 
+使用当前用户的访问令牌查询单次 Run 耗时：
+
+```bash
+curl -fsS -H "Authorization: Bearer $OPS_TOKEN" \
+  "http://127.0.0.1:8000/api/agent-runs/$RUN_ID/profile"
+```
+
 ## 本地开发
 
 ### Backend
@@ -435,6 +516,8 @@ PYTHONPATH=. python scripts/check_migrations.py
 uvicorn app.main:app --reload
 ```
 
+API 只负责提交任务，本机开发还需要在另一个终端启动 `python -m app.worker`。使用旧 PostgreSQL 轮询模式时，为 API 与 Worker 统一设置 `TASK_BROKER=postgres`；连接本机映射端口时使用对应的 `DATABASE_URL`，而不是 Compose 内网主机名。RabbitMQ 模式还需运行 `python -m app.outbox_publisher` 和 `python -m app.maintenance`，可直接使用 Compose 启动完整后端服务。
+
 ### Frontend
 
 ```bash
@@ -444,6 +527,8 @@ npm test
 npm run build
 npm run dev
 ```
+
+修改 Nginx 代理后，可运行 `npm run test:proxy`：测试需要 Docker 和本地 `nginx:1.27-alpine` 镜像，在隔离网络中替换后端 IP，验证 API、查询参数、POST 和健康检查能在不重启前端的情况下恢复；测试结束会清理临时容器。`npm run test:e2e` 则检查当前运行实例的首页及真实 API 代理。
 
 ### Docker Runtime 集成测试
 
@@ -482,12 +567,18 @@ backend/
 │   ├── api/               FastAPI 路由
 │   ├── audit/             链式审计
 │   ├── capabilities/      Capability 定义与 Registry
+│   ├── cache.py           有界 Redis 计算缓存访问
+│   ├── dispatch.py        事务 Outbox 与版本化消息投递
+│   ├── broker_worker.py   RabbitMQ 消费与 Run 领取
+│   ├── outbox_publisher.py  已提交事件发布
 │   ├── context/           项目上下文与 Collector
 │   ├── evidence/          Runtime Evidence
 │   ├── experience/        项目经验
 │   ├── llm/               结构化模型网关
 │   ├── monitoring/        主动巡检与受限自动修复
+│   ├── maintenance.py     独立采集、巡检与恢复入口
 │   ├── policy/            权限、风险和 Action Hash
+│   ├── profiling.py       Run 时间线与耗时报告
 │   └── runtime/           Adapter 与 SSH Transport
 ├── scripts/               迁移与维护脚本
 └── tests/                 后端测试
@@ -504,6 +595,7 @@ docker-compose.yml         本地一键部署
 
 - `.env`、API Key、注册码和 SSH 私钥不得提交到 Git。
 - PostgreSQL 和 Backend 默认只绑定服务器的 `127.0.0.1`，远程用户只访问 Web 入口。
+- RabbitMQ 只承载通知，Redis 只保存可重算结果；权限、审批、运行状态和执行租约始终由 PostgreSQL 与现有执行层负责。
 - 账号密码只保存不可逆摘要；登录令牌同时受 JWT 过期时间、`token_version` 和服务端会话状态约束。
 - 修改密码会提升 `token_version` 并撤销全部服务端会话。
 - Connection API 只展示凭据和指纹是否已配置，不回传原始值。
@@ -539,7 +631,7 @@ docker-compose.yml         本地一键部署
 | 状态 | 能力 |
 | --- | --- |
 | Stable 候选 | 认证、注册、项目与会话管理、异步 Run、结构化 Decision、Registry 编译 |
-| Beta | LangGraph 多步调查、Skill 选择、Docker Runtime、审批变更、稳定窗口验证、Evidence/Claim/Audit、Context、项目文档混合检索与重排、系统知识、主动巡检、工作台 |
+| Beta | LangGraph 多步调查、Knowledge Path、Skill 选择、RabbitMQ/Outbox 投递、Redis 计算缓存、Run Profiling、Docker Runtime、审批变更、稳定窗口验证、Evidence/Claim/Audit、Context、项目文档混合检索与重排、系统知识、主动巡检、工作台 |
 | Experimental | Kubernetes 和 systemd 真实执行 |
 | Planned | 文档审核闭环、候选巡检规则、外部告警渠道 |
 
@@ -547,11 +639,14 @@ docker-compose.yml         本地一键部署
 
 ## 更多文档
 
+- [当前详细设计（总分结构）](docs/architecture/CURRENT_DESIGN.md)
 - [文档索引](docs/README.md)
-- [项目结构](docs/architecture/PROJECT_STRUCTURE.md)
-- [最终架构状态](docs/implementation/04-final-architecture-status.md)
+- [源码教学（历史基线）](docs/tutorial/README.md)
+- [AgentRun Profiling](docs/implementation/06-agentrun-profiling.md)
+- [Redis、RabbitMQ 与 Knowledge Path 升级](docs/implementation/07-redis-rabbitmq-knowledge-path.md)
 - [测试验收清单](docs/review/TEST_ACCEPTANCE_CHECKLIST.md)
-- [测试报告](test-results/10-final-report.md)
+- [本轮性能与故障实验报告](test-results/13-v2-latency.md)
+- [原架构测试报告](test-results/10-final-report.md)
 
 ## License
 

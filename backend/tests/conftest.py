@@ -10,6 +10,9 @@ os.environ.setdefault("APP_SECRET_KEY", "test-secret-key-with-more-than-32-chara
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-placeholder-key")
 os.environ.setdefault("SSH_STRICT_HOST_KEY_CHECKING", "true")
 os.environ.setdefault("VERIFICATION_INTERVAL_SECONDS", "0")
+os.environ.setdefault("KNOWLEDGE_FAST_PATH_ENABLED", "false")
+os.environ.setdefault("TASK_BROKER", "postgres")
+os.environ.setdefault("REDIS_URL", "")
 
 
 default_database_host = "postgres" if Path("/app").exists() else "127.0.0.1"

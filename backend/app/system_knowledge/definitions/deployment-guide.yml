@@ -1,0 +1,72 @@
+- id: deployment_start_and_health
+  title: Ops 部署启动、服务分工与健康检查
+  summary: Web、API、Worker 和数据库职责不同，需要分别确认可用性。
+  tags: [部署, 启动, docker compose up, backend, worker, postgres, 健康检查]
+  content: |
+    ## 准备与启动
+    在 Ops Agent Chat 的部署目录准备 .env，设置应用密钥、数据库连接和密码、初始管理员配置，按需配置模型和 SSH 挂载。不要在目标业务项目目录运行 Ops 的部署命令。
+    在 Ops 部署主机执行：
+    ```sh
+    docker compose up -d --build
+    docker compose ps
+    docker compose logs --tail=100 backend worker
+    ```
+    日志可能包含环境信息，分享前先脱敏。Backend 启动入口会执行 Alembic 迁移，迁移失败时应查看具体异常，不能跳过迁移假装启动成功。
+
+    ## 服务职责与验收
+    frontend 提供网页及 API 反向代理，backend 接收请求，worker 执行 Agent 与巡检，postgres 保存业务数据和 checkpoint。网页能打开不代表 Worker 正常。
+    /live 检查 API 进程存活，/ready 和 /health 检查更多依赖。完成容器检查后再登录、发起一条普通聊天、读取测试项目状态，分别确认模型和 Worker 链路。
+
+- id: deployment_network_access
+  title: IP 端口访问、容器网络与 WSL 地址区别
+  summary: 必须从实际发起请求的位置理解 localhost，外部浏览器通常访问 Web 端口。
+  tags: [访问网址, 5175, 8000, localhost, host.docker.internal, WSL, 防火墙, HTTP]
+  content: |
+    ## 默认访问路径
+    默认 Web 地址是 http://服务器IP:5175，端口可由 WEB_PORT 调整；Backend 默认绑定部署主机的 127.0.0.1:8000。远程浏览器通过前端代理访问 API，无需直接开放数据库端口。
+
+    ## 地址含义
+    浏览器里的 localhost 是访问者电脑；容器里的 localhost 是该容器。Compose 网络中 postgres 是数据库服务名。Docker Desktop 下 host.docker.internal 常用于容器访问宿主机，但它不是任意远端服务器的地址，也不保证在所有 Linux 部署中可直接解析。
+    WSL 部署还受到 Windows 防火墙和 WSL 网络模式影响，应分别检查 WSL 本地访问、Windows 本地访问、局域网其他设备访问，定位在哪一跳失败。不要在未确定网络模式时套用固定 IP 转发命令。
+
+    ## 故障排查
+    先确认容器端口映射与监听，再检查前端代理、主机防火墙及路由。页面可打开但 API 失败时看 backend 和代理日志。当前 HTTP 适用于可信测试环境，公网使用需要部署 HTTPS，不能宣称 HTTP 会加密密码或令牌。
+
+- id: deployment_upgrade_and_persistence
+  title: 升级、环境变量变更与数据库迁移
+  summary: 应用重建和数据库数据是不同生命周期，升级前应备份并确认迁移。
+  tags: [升级, 更新, 重建, 环境变量, restart, force-recreate, 数据迁移, alembic]
+  content: |
+    ## 变更如何生效
+    修改应用源码需要构建新镜像并重新创建服务；修改 .env 或 bind mount 后应重新创建相关容器，单纯 restart 不会重新加载 Compose 的容器配置。
+    例如只调整 Ops 的密钥挂载后，在 Ops 部署目录运行：
+    ```sh
+    docker compose up -d --force-recreate backend worker
+    ```
+    不要把这个命令用于重建被管理的业务服务。开发者更新内置知识定义后也需更新 Backend、Worker 镜像，使两者加载同一版本。
+
+    ## 迁移与持久化
+    账号、文档和聊天等数据在数据库卷中，重建应用容器通常保留它们。普通升级不要使用 docker compose down -v，它会删除 Compose 管理的数据卷。已有数据库用户密码不会随 POSTGRES_PASSWORD 环境变量自动改变。
+    启动报数据库认证错误时核对现有数据库凭据和 DATABASE_URL；报迁移错误时记录 revision 与异常，由维护者处理。不要手工修改 revision 表绕过失败。
+
+    ## 验收
+    检查容器健康、迁移结果、旧账号登录与历史聊天是否保留，再验证 Worker 和项目连接。保持 APP_SECRET_KEY 和模型凭据加密材料稳定；随意更换可能使会话或已存模型凭据无法使用。
+
+- id: deployment_backup_and_restore
+  title: 数据库备份与恢复演练
+  summary: 备份要能在隔离环境恢复，密钥与数据库需要分别保管。
+  tags: [备份, 恢复, pg_dump, 数据卷, 丢失数据, 数据库]
+  content: |
+    ## 备份什么
+    PostgreSQL 包含账号、会话、项目、文档、执行和审计数据。SSH 私钥及 .env 中的加密材料不在数据库备份里，需要部署维护者独立、安全地保存。数据库中的加密模型凭据恢复后仍依赖原加密材料。
+
+    ## 备份示例
+    在 Ops 部署主机执行，用户名与数据库名按实际配置替换：
+    ```sh
+    mkdir -p backups
+    docker compose exec -T postgres pg_dump -U opsagent -d ops_agent_chat -Fc > backups/ops-agent.dump
+    ```
+    示例文件名会覆盖同名备份，正式维护应使用独立版本名称。检查命令成功、文件非空，并妥善限制备份访问；不要提交 Git。
+
+    ## 恢复验证
+    先在隔离数据库中使用 pg_restore 恢复，检查表、文档数量、账号登录及应用兼容性。实际生产替换需要维护窗口、备份当前数据和明确回退方案，不能让 Agent 直接拿示例覆盖正在使用的数据库。仅有备份文件不代表恢复演练通过。

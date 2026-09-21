@@ -10,6 +10,8 @@ from app.models.agent import AgentRun
 from app.models.chat import ChatMessage, ChatSession
 from app.models.monitoring import MonitorEvent
 from app.models.project import Environment, Project
+from app.dispatch import enqueue_run
+from app.profiling import queue_after_commit
 
 
 def queue_critical_diagnosis(
@@ -64,6 +66,8 @@ def queue_critical_diagnosis(
     db.add(run)
     db.flush()
     event.diagnostic_run_id = run.id
+    enqueue_run(db, run.id)
+    queue_after_commit(db, run.id)
     append_audit_event(
         db,
         actor_type="monitor",

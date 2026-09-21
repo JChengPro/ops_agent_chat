@@ -1,5 +1,7 @@
 # 实现决策
 
+本文保留既有架构的设计理由，不作为完整的当前状态清单。2026-09-21 已核对调度升级：D-005、D-007 的早期 Worker 部署决策已被部分替代；当前调用链以 [详细设计](../architecture/CURRENT_DESIGN.md) 为准。
+
 ## D-001 保留单 Agent LangGraph
 
 当前 Graph 已覆盖通用回答、只读调查和审批变更。继续复用，安全授权仍由 Registry、Policy 和 Runtime 负责，不引入多 Agent。
@@ -18,6 +20,8 @@ Environment 的执行相关字段使用确定性 JSON 计算 revision，不依�
 
 ## D-005 状态转换集中化但不重写 Worker
 
+> 部分替代：状态转换、CAS、lease 与 checkpoint 原则保留；当前 RabbitMQ 模式使用独立消费者、Outbox 发布器和 Maintenance，已不沿用单一 Worker 处理全部任务的部署方式。
+
 新增领域状态模块封装允许值、终态和 CAS；保留当前 Worker lease 和 LangGraph Checkpoint。数据库增加 CheckConstraint 防止非法状态字符串。
 
 ## D-006 Approval 批次全有或全无
@@ -25,6 +29,8 @@ Environment 的执行相关字段使用确定性 JSON 计算 revision，不依�
 一个 Run 中任一审批拒绝、过期、取消或快照失效时，终止其余 pending Approval，并把 Run 原子排队恢复以生成用户可见终态。Approval 决定保留审计事实，不把系统失效伪装成用户拒绝。
 
 ## D-007 Collector 复用数据库 Worker
+
+> 已被替代：以下描述早期实现。当前 CollectorRun 仍在 PostgreSQL 排队，RabbitMQ 模式由独立 Maintenance 领取；AgentRun 经事务 Outbox 和 RabbitMQ 通知消费者，Redis 仅作为计算缓存。PostgreSQL 回退模式仍复用原 Worker。详见 [升级与回退](07-redis-rabbitmq-knowledge-path.md)。
 
 不引入 Redis/Celery。CollectorRun 作为队列，现有 Worker 同时领取 AgentRun 和 CollectorRun；API 返回 202，支持状态、取消、超时和去重。
 

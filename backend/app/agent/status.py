@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.models.action import Action, Approval
 from app.models.agent import AgentRun
+from app.profiling import queue_after_commit
+from app.dispatch import enqueue_run
 
 
 RUN_STATUSES = {"created", "queued", "running", "waiting_for_approval", "completed", "failed", "cancelled"}
@@ -57,6 +59,9 @@ def queue_run_resume(db: Session, run_id: str) -> bool:
         )
         .returning(AgentRun.id)
     )
+    if claimed:
+        enqueue_run(db, run_id)
+        queue_after_commit(db, run_id)
     return bool(claimed)
 
 

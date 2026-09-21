@@ -18,6 +18,8 @@ from app.core.config import get_settings
 from app.monitoring.diagnostics import finalize_monitor_diagnosis
 from app.system_knowledge.registry import system_knowledge_registry
 from app.utils.public_config import public_config
+from app.profiling import answer_committed, claimed, measure, profiled, profile_worker, queue_after_commit
+from app.dispatch import enqueue_run
 
 logger = logging.getLogger(__name__)
 WORKER_LEASE_EXPIRED_ANSWER = (
@@ -61,12 +63,21 @@ def create_run(db: Session, session: ChatSession, user_id: int, content: str, cl
         environment_id=session.environment_id,
         run_id=run.id,
     )
+    queue_after_commit(db, run.id)
+    enqueue_run(db, run.id)
     db.commit()
     db.refresh(run)
     return {"user_message": message_out(user_message), "run_summary": run_out(run), "replayed": False}
 
 
 def execute_run(db: Session, agent, run: AgentRun) -> dict:
+    with measure("context.initialize"):
+        initial = _initial_context(db, run)
+    result = agent.graph.invoke(initial, config=_graph_config(run.id))
+    return _persist_result(db, run, result)
+
+
+def _initial_context(db: Session, run: AgentRun) -> dict:
     session = db.get(ChatSession, run.session_id)
     user_message = db.get(ChatMessage, run.user_message_id)
     if not session or not user_message:
@@ -82,8 +93,7 @@ def execute_run(db: Session, agent, run: AgentRun) -> dict:
         "read_only": control.get("read_only") is True,
         "monitor_event_id": control.get("monitor_event_id"),
     }
-    result = agent.graph.invoke(initial, config=_graph_config(run.id))
-    return _persist_result(db, run, result)
+    return initial
 
 
 def resume_run(db: Session, agent, run: AgentRun) -> dict:
@@ -98,6 +108,7 @@ def _graph_config(run_id: str) -> dict:
     return {"configurable": {"thread_id": run_id}, "recursion_limit": 1_000_000}
 
 
+@profiled("answer.persist")
 def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
     db.refresh(run)
     if run.status == "cancelled" or run.cancel_requested_at:
@@ -183,6 +194,7 @@ def _persist_result(db: Session, run: AgentRun, result: dict) -> dict:
     run.lease_expires_at = None
     run.heartbeat_at = datetime.now(timezone.utc)
     db.commit()
+    answer_committed(run)
     finalize_monitor_diagnosis(db, run.id)
     db.refresh(message); db.refresh(run)
     return {"assistant_message": message_out(message), "run_summary": run_out(run), "approvals": approval_payload}
@@ -272,10 +284,12 @@ def _system_knowledge_ids(evidence_rows: list[RuntimeEvidence]) -> list[str]:
     return identifiers
 
 
-def claim_run(db: Session, worker_id: str, run_id: str | None = None) -> AgentRun | None:
+def claim_run(db: Session, worker_id: str, run_id: str | None = None, *, dispatch_version: int | None = None) -> AgentRun | None:
     statement = select(AgentRun).where(AgentRun.status == "queued").order_by(AgentRun.created_at).with_for_update(skip_locked=True).limit(1)
     if run_id:
         statement = select(AgentRun).where(AgentRun.id == run_id, AgentRun.status == "queued").with_for_update(skip_locked=True)
+    if dispatch_version is not None:
+        statement = statement.where(AgentRun.dispatch_version == dispatch_version)
     run = db.scalar(statement)
     if not run:
         return None
@@ -288,10 +302,12 @@ def claim_run(db: Session, worker_id: str, run_id: str | None = None) -> AgentRu
     run.heartbeat_at = now
     run.lease_expires_at = now + timedelta(seconds=30)
     db.commit()
+    claimed(db, run)
     db.refresh(run)
     return run
 
 
+@profile_worker
 def process_claimed_run(db: Session, agent, run: AgentRun, worker_id: str) -> dict:
     heartbeat = LeaseHeartbeat(run.id, worker_id)
     heartbeat.start()

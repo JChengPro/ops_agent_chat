@@ -34,3 +34,31 @@
   tags: [monitoring, worker, heartbeat, docker]
   content: |
     检查 Worker 容器状态、日志和心跳记录，再检查数据库与消息循环是否可用。Worker exited 时不会继续主动巡检，也不会领取普通 AgentRun。修复 Worker 后应确认心跳恢复并手动触发或等待下一轮巡检。
+
+- id: monitoring_scope_and_schedule
+  title: 巡检范围、检查间隔与新问题如何纳入
+  summary: 环境决定巡检对象，当前规则来自确定性代码，不从任意文档或聊天自动学习执行。
+  tags: [巡检范围, 检查哪些, 多久, 间隔, 动态更新, 新问题, 自动学习, known_services]
+  content: |
+    ## 检查范围
+    Docker Compose 读取登记项目的服务状态、Health、ExitCode，并结合已知服务识别缺失；Kubernetes 检查 Namespace 内 Deployment 副本状态；systemd 检查 known_services 中服务是否 active。其他运行时不能据此宣称已支持同等巡检。
+    巡检不是全面应用压测或业务正确性检查。服务进程 running 不代表所有接口和业务功能都正常，文档里出现一条 HTTP URL 也不会自动将它加入周期检查。
+
+    ## 频率和更新
+    MONITOR_INTERVAL_SECONDS 控制巡检调度间隔，但实际启动还受 Worker 可用性和任务耗时影响。检查最近巡检时间与事件，不要把配置间隔当作严格告警时限。
+    目标 Compose 或已知服务配置变化后应更新环境和采集信息。聊天中发现并修复的新问题不会自动生成已审核巡检规则；需要开发人员补充判定、允许的处置和回归测试后发布。
+
+- id: monitoring_remediation_boundaries
+  title: 自动修复具体支持什么，手动停止是否会被拉起
+  summary: 当前自动处置限于特定环境中的已停止 Compose 服务，不是任意低风险命令执行器。
+  tags: [自动修复范围, 自动启动, 手动停止, 维护, development, test, production, 没有修复]
+  content: |
+    ## 同时满足的条件
+    当前环境开启巡检和自动修复，策略环境为 development 或 test，运行时为 docker_compose，发现 service_stopped，事件仍 open 且没有关联过修复 Action，才进入自动启动资格判断。执行前还要核对登记目标、策略和只读停止状态，随后调用 service.start 并验证。
+    unhealthy、缺失服务、SSH 身份异常、生产环境以及 Kubernetes/systemd 变更不会由这条规则直接自动修复。已有修复 Action 的同一事件不会无限反复尝试。
+
+    ## 人工维护
+    当前规则不能只凭容器已停止判断这是故障还是人为维护。计划停服务前，在正确环境关闭低风险自动修复；保留巡检可继续看到异常，若也不需要巡检则分别关闭。维护结束后明确恢复开关，并核对页面摘要。
+
+    ## 大问题和自身故障
+    Critical 事件可触发只读诊断 Run 收集证据并给出建议，变更需要走后续受控流程。Ops 自己的 Worker 停止时无法继续巡检，前端停止时无法显示通知；当前站内机制不能替代独立外部监控。历史“已恢复”只描述该事件最后一次确认，不保证此刻仍健康。

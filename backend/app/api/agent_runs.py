@@ -14,6 +14,7 @@ from app.models.action import Action, Approval, ToolInvocation
 from app.models.agent import AgentRun, AgentStep
 from app.models.evidence import RuntimeEvidence
 from app.models.user import User
+from app.profiling import report as profile_report
 
 router = APIRouter(tags=["agent-runs"])
 
@@ -86,6 +87,11 @@ def execute_queued_run(run_id: str, response: Response, db: Session = Depends(ge
 def steps(run_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     require_run(db, user, run_id)
     return db.scalars(select(AgentStep).where(AgentStep.run_id == run_id).order_by(AgentStep.sequence)).all()
+
+
+@router.get("/agent-runs/{run_id}/profile")
+def profile(run_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return profile_report(db, require_run(db, user, run_id))
 
 
 @router.get("/agent-runs/{run_id}/evidence")

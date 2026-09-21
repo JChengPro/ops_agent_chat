@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import json
+import hashlib
+import math
 import threading
 import time
 from typing import Protocol
@@ -13,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.llm.configuration import ResolvedLLMConfiguration, resolve_llm_configuration
+from app.profiling import request_call
+from app.cache import get_json, set_json
 
 
 RERANK_PROMPT = """You are a relevance reranker for an operations knowledge base.
@@ -61,7 +65,7 @@ class RerankCache:
             if expires_at <= now:
                 return None
             self._entries[key] = entry
-            return list(results)
+        return list(results)
 
     def set(self, key: str, results: list[RerankResult]) -> None:
         if self.ttl_seconds <= 0:
@@ -73,16 +77,37 @@ class RerankCache:
                 self._entries.popitem(last=False)
 
 
-_cache_settings: tuple[int, int] | None = None
+class SharedRerankCache(RerankCache):
+    def get(self, key):
+        if self.ttl_seconds <= 0:
+            return None
+        cached = get_json("ops:v1:rerank:" + key)
+        if isinstance(cached, list) and cached:
+            try:
+                items = [RerankResult(id=item["id"], score=float(item["score"])) for item in cached]
+                if (all(isinstance(item.id, str) and math.isfinite(item.score) and 0 <= item.score <= 1 for item in items)
+                        and len({item.id for item in items}) == len(items)):
+                    return items
+            except (ValueError, TypeError, KeyError):
+                pass
+        return super().get(key)
+
+    def set(self, key, results):
+        super().set(key, results)
+        set_json("ops:v1:rerank:" + key, [{"id": item.id, "score": item.score} for item in results], self.ttl_seconds)
+
+
+_cache_settings: tuple[int, int, str] | None = None
 _rerank_cache: RerankCache | None = None
 
 
 def configured_rerank_cache() -> RerankCache:
     global _cache_settings, _rerank_cache
     settings = get_settings()
-    cache_settings = (settings.rerank_cache_max_entries, settings.rerank_cache_ttl_seconds)
+    cache_settings = (settings.rerank_cache_max_entries, settings.rerank_cache_ttl_seconds, settings.redis_url)
     if _rerank_cache is None or _cache_settings != cache_settings:
-        _rerank_cache = RerankCache(max_entries=cache_settings[0], ttl_seconds=cache_settings[1])
+        cache_type = SharedRerankCache if settings.redis_url else RerankCache
+        _rerank_cache = cache_type(max_entries=cache_settings[0], ttl_seconds=cache_settings[1])
         _cache_settings = cache_settings
     return _rerank_cache
 
@@ -107,6 +132,7 @@ class OpenAICompatibleReranker:
     def __init__(self, configuration: ResolvedLLMConfiguration, *, model: str, timeout: int) -> None:
         self.provider_name = configuration.provider
         self.model = model
+        self.cache_identity = [configuration.base_url, hashlib.sha256(configuration.api_key.encode()).hexdigest()]
         self.client = OpenAI(
             api_key=configuration.api_key,
             base_url=configuration.base_url.rstrip("/"),
@@ -121,7 +147,7 @@ class OpenAICompatibleReranker:
             "query": query,
             "documents": [{"id": document.id, "text": document.text} for document in documents],
         }
-        completion = self.client.chat.completions.create(
+        completion = request_call(self.client.chat.completions.create, purpose="rerank",
             model=self.model,
             messages=[
                 {

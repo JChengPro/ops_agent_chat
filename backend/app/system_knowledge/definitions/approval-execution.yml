@@ -19,7 +19,7 @@
   summary: 同一项批准只能有效恢复并执行一次，重复点击不会再次执行变更。
   tags: [approval, idempotency, consumed, duplicate]
   content: |
-    后端通过条件更新和消费时间保证并发请求中只有一次批准能恢复 Run。页面显示“批准中”时应等待状态刷新。若审批已经 consumed，应查看原 Run 和 Action 的最终状态，而不是创建重复执行。
+    审批 API 通过事务和状态检查处理重复决定；Worker 真正领取变更执行时，通过原子状态转换和 consumed_at 首次写入避免重复消费。页面显示“批准中”时应等待状态刷新。若审批已经 consumed，应查看原 Run 和 Action 的最终状态，而不是创建重复执行。数据库防重不能保证任意远程命令的端到端 exactly-once，失联后仍需复核目标状态。
 
 - id: worker_lease_expired
   title: Agent Worker 租约或心跳超时
@@ -34,3 +34,18 @@
   tags: [action, execution-unknown, timeout, recovery]
   content: |
     常见原因包括 SSH 命令超时、Worker 失联或进程在收到远端响应前退出。此状态必须与 failed 区分，因为盲目重试可能重复变更。应先执行独立、只读、幂等的状态检查；只有确认原操作未生效并重新生成 Action 后，才考虑再次审批执行。
+
+- id: approval_lifecycle_and_verification
+  title: 部分批准、审批过期与执行后的稳定验证
+  summary: 选择操作、授权执行、命令结果和最终验证是不同阶段。
+  tags: [部分批准, 勾选, 拒绝, 审批过期, 15分钟, succeeded, verified, 稳定验证]
+  content: |
+    ## 批准前
+    核对项目、环境、服务、影响与恢复策略，只勾选需要执行的变更再提交；未选项不会执行。当前普通审批创建时有效期为 15 分钟，过期后不能继续使用，应重新读取状态并规划。拒绝不是失败重试，不能继续执行被拒绝的 Action。
+
+    ## 批准后
+    前端传回对应 Action Hash，API 校验审批与快照；Worker 恢复时还会核对绑定、有效期、配置与策略，并执行只读复核。审批已通过不代表命令已发出，页面需要继续跟踪 Run 与 Action 状态。
+
+    ## 结果判断
+    succeeded 表示执行阶段成功，verified 表示独立验证符合目标。服务启停等操作会在配置的窗口内连续观察；默认要求连续成功，单次 running 不足以宣称稳定恢复。停止后的预期是确实停止，不是仍 running。
+    verification_failed 或 execution_unknown 时先看证据，再决定后续处理。没有注册的可靠 verifier 时不能假装成功，回滚也不是所有动作都具备的通用撤销功能。

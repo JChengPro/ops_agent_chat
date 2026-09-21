@@ -1,4 +1,28 @@
 services:
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-opsagent}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-opsagent_local}
+    volumes:
+      - ops_agent_rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: ops-agent-postgres
@@ -23,9 +47,13 @@ services:
     container_name: ops-agent-backend
     restart: unless-stopped
     env_file: .env
-    environment:
+    environment: &app-environment
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://opsagent:opsagent_password@postgres:5432/ops_agent_chat}
       VIDEOHUB_SSH_HOST: ${VIDEOHUB_SSH_HOST:-host.docker.internal}
+      TASK_BROKER: ${TASK_BROKER:-rabbitmq}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://opsagent:opsagent_local@rabbitmq:5672/%2F}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      KNOWLEDGE_FAST_PATH_ENABLED: ${KNOWLEDGE_FAST_PATH_ENABLED:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -55,12 +83,10 @@ services:
 
   worker:
     build: ./backend
-    container_name: ops-agent-worker
     restart: unless-stopped
+    stop_grace_period: 330s
     env_file: .env
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://opsagent:opsagent_password@postgres:5432/ops_agent_chat}
-      VIDEOHUB_SSH_HOST: ${VIDEOHUB_SSH_HOST:-host.docker.internal}
+    environment: *app-environment
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -69,7 +95,40 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     command: ["python", "-m", "app.worker"]
+
+  outbox:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment: *app-environment
+    depends_on:
+      backend:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "app.outbox_publisher"]
+
+  maintenance:
+    build: ./backend
+    restart: unless-stopped
+    stop_grace_period: 330s
+    env_file: .env
+    environment: *app-environment
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./docs:/app/docs:ro
+      - ${VIDEOHUB_SSH_KEY_HOST_DIR:-./secrets}:/run/secrets:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["python", "-m", "app.maintenance"]
 
 volumes:
   ops_agent_postgres_data:
+  ops_agent_rabbitmq_data:

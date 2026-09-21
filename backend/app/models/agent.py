@@ -27,6 +27,7 @@ class AgentRun(Base):
     plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     current_step: Mapped[str | None] = mapped_column(String(80), nullable=True)
     step_count: Mapped[int] = mapped_column(default=0)
+    dispatch_version: Mapped[int] = mapped_column(default=0, server_default="0")
     model_provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     prompt_version: Mapped[str] = mapped_column(String(40), default="final-1")

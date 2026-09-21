@@ -10,6 +10,9 @@ from app.experience.service import lexical_terms
 
 
 DOCUMENT_METADATA = {
+    "system-guide": ("系统功能与账号使用", "能力边界、Skill、账号登录、任务状态以及证据和引用的使用说明。"),
+    "project-guide": ("项目接入与文档管理", "项目与环境配置、多项目隔离、上下文采集、文档上传与检索排查。"),
+    "deployment-guide": ("部署、升级与维护", "服务启动、数据库迁移、网络访问、备份恢复和故障定位。"),
     "ssh-errors": ("SSH 连接与安全", "SSH 密钥、身份验证、主机指纹、网络连接与命令超时处理。"),
     "runtime-errors": ("Docker 与运行时", "容器退出、健康检查、Compose 服务、HTTP 健康端点与执行验证。"),
     "approval-execution": ("审批与安全执行", "Action 审批、Hash 失效、幂等消费、Worker 租约与未知执行结果。"),
@@ -89,6 +92,11 @@ class SystemKnowledgeRegistry:
                 "title": document["title"],
                 "summary": document["summary"],
                 "read_only": True,
+                # Older clients render content directly instead of iterating items.
+                "content": "\n\n".join(
+                    f"## {item.title}\n\n{item.summary}\n\n{item.content}"
+                    for item in document["items"]
+                ),
                 "items": [item.public_dict() for item in document["items"]],
             }
             for document in self._documents.values()

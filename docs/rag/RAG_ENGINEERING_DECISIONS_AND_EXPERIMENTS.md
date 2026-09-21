@@ -1,5 +1,7 @@
 # RAG 工程决策与实验记录
 
+> 历史实验记录：下文“当前”指各实验当时的模型、语料与代码基线，不是实时部署状态。2026-09-21 已接入 Redis 查询向量与共享 rerank 缓存，D9 和第 5 节“暂不引入 Redis”的取舍已被替代。当前检索、缓存与 Knowledge Path 见 [详细设计](../architecture/CURRENT_DESIGN.md#s10)，本轮端到端测量见 [性能实验](../../test-results/13-v2-latency.md)。历史质量与延迟数据保留，不能外推为新版所有请求的性能。
+
 ## 1. 结论摘要
 
 本轮目标不是单独“加一个 reranker”，而是让项目文档检索在准确性、延迟、隔离性、可降级和可评测之间形成闭环。
@@ -126,7 +128,7 @@
 
 结论：当前语料使用自适应跳过。保留 rerank 接口，是为了后续来源规模增大和专用模型接入，不是为了让每次查询都多一次 DeepSeek 调用。
 
-### D9：缓存必须同时绑定 Query、模型和 Chunk 内容版本
+### D9：缓存必须同时绑定 Query、模型和 Chunk 内容版本（存储方案已升级）
 
 进程内缓存采用 TTL + LRU，默认 `300s / 256` 项。Key 包含项目、Environment、provider、model、规范化 Query、候选 `chunk_key + content_hash`；Key 自身再做 SHA-256，不保存明文查询。
 
@@ -224,7 +226,7 @@ LLM_ALLOWED_BASE_URLS=https://api.deepseek.com,https://api.openai.com/v1,https:/
 | 相对分数阈值 | Evidence Recall 降至 `0.967` | 更大盲测证明可保持召回 |
 | 每文档只取 1 块 | 多证据题漏证据 | 文档结构变化并重建 Gold |
 | 继续调 Chunk Size | 四组参数结果完全相同 | 增加长文档和跨块问题 |
-| Redis rerank 缓存 | 当前无多实例收益证据 | 多 Worker/多副本部署 |
+| Redis rerank 缓存（当时未采用，现已接入） | 当时无多实例收益证据 | 当前实现见主设计第 11 节 |
 | 用同一个 DeepSeek 评答案又做 Judge | 自我评判偏差大，不能作为可靠准确率 | 增加人工标注或独立 Judge |
 | 只验证向量可写入就宣称质量提升 | 链路可用不代表排序更准 | 完成 lexical/vector/hybrid 成对评测 |
 

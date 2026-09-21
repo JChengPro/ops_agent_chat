@@ -25,6 +25,8 @@ from app.runtime.executor import RuntimeExecutor
 from app.runtime.verification import runtime_records, verification_satisfied, verification_window
 from app.skills.registry import skill_registry
 from app.system_knowledge.registry import system_knowledge_registry
+from app.profiling import decision_round, profiled
+from app.agent.routing import compact_evidence, knowledge_request, knowledge_route
 
 
 def approval_summaries(capability_name: str, target: dict[str, Any], rollback: dict[str, Any] | None) -> tuple[str, str]:
@@ -136,6 +138,7 @@ class OpsAgentGraph:
         graph.add_edge("finish", END)
         return graph
 
+    @profiled("capabilities.resolve")
     def resolve_capabilities(self, state: AgentState) -> dict:
         with SessionLocal() as db:
             runtime_type = None
@@ -172,8 +175,22 @@ class OpsAgentGraph:
             db.commit()
         return {"context": context, "capabilities": capabilities, "evidence": [], "tool_call_count": 0, "step_count": 1, "status": "running"}
 
+    @profiled("skill.selection")
     def select_skill(self, state: AgentState) -> dict:
         capabilities = state.get("capabilities", [])
+        if get_settings().knowledge_fast_path_enabled and knowledge_route(
+            state["question"], capabilities, execution_mode=state.get("execution_mode") or "interactive",
+        ):
+            with SessionLocal() as db:
+                run = db.get(AgentRun, state["run_id"])
+                if run:
+                    run.plan_json = {**(run.plan_json or {}), "request_path": "knowledge", "router_version": "knowledge-1"}
+                self._step(db, state, "route_request", {"path": "knowledge", "reason": "explicit_knowledge_request"})
+                db.commit()
+            return {"request_path": "knowledge", "read_only": True,
+                    "context": {**state.get("context", {}), "read_only": True},
+                    "capabilities": [item for item in capabilities if item.get("name") == "experience.search"],
+                    "selected_skill": None, "step_count": state.get("step_count", 0) + 1}
         available = {str(item.get("name")) for item in capabilities}
         runtime_type = str(state.get("context", {}).get("runtime_type") or "")
         candidates = skill_registry.resolve(runtime_type, available)
@@ -234,6 +251,7 @@ class OpsAgentGraph:
             "step_count": state.get("step_count", 0) + 1,
         }
 
+    @decision_round
     def decide(self, state: AgentState) -> dict:
         settings = get_settings()
         with SessionLocal() as db:
@@ -309,6 +327,28 @@ class OpsAgentGraph:
                     "step_count": state.get("step_count", 0) + 1,
                 }
             try:
+                if state.get("request_path") == "knowledge":
+                    request = knowledge_request()
+                    if not state.get("knowledge_searched"):
+                        calls = [{"capability": "experience.search", "arguments": {"query": state["question"], "limit": 5},
+                                  "purpose": "Read verified project knowledge"}]
+                        payload = {"decision": "invoke_tools", "request": request, "tool_calls": calls, "claims": []}
+                        run.request_json = request
+                        self._step(db, state, "decision", {"source": "knowledge_router", "tool_calls": 1})
+                        db.commit()
+                        return {"decision": payload, "pending_calls": calls, "knowledge_searched": True,
+                                "step_count": state.get("step_count", 0) + 1}
+                    sources = compact_evidence(state.get("evidence", []), settings.knowledge_context_max_chars)
+                    response = self.gateway.answer_knowledge(
+                        db, run_id=state["run_id"], question=state["question"], sources=sources,
+                        cancel_check=lambda: self._run_cancelled(state["run_id"]),
+                    )
+                    self._step(db, state, "decision", {"source": "knowledge_response", "source_count": len(sources)})
+                    db.commit()
+                    return {"decision": {"decision": "respond", "request": request, "tool_calls": []},
+                            "pending_calls": [], "answer": response.answer,
+                            "claims": [item.model_dump(mode="json") for item in response.claims],
+                            "step_count": state.get("step_count", 0) + 1}
                 if not state.get("context", {}).get("project_selected") and not self.gateway.provider:
                     matches = system_knowledge_registry.search(state["question"], limit=3)["items"]
                     response = self.gateway.answer_general(

@@ -41,6 +41,11 @@ class GeneralChatResponse(BaseModel):
     used_system_knowledge_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
+class KnowledgeResponse(BaseModel):
+    answer: str = Field(min_length=1, max_length=10000)
+    claims: list[ClaimDraft] = Field(default_factory=list, max_length=5)
+
+
 class AgentDecision(BaseModel):
     decision: Literal["respond", "clarify", "invoke_tools", "propose_change"]
     request: RequestUnderstanding

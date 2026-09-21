@@ -23,6 +23,7 @@ from app.runtime.adapters.registered import RegisteredConfigAdapter, RegisteredD
 from app.runtime.adapters.systemd import SystemdAdapter
 from app.runtime.transports.ssh import SSHTransport
 from app.system_knowledge.registry import system_knowledge_registry
+from app.profiling import measure
 
 
 class RuntimeExecutor:
@@ -33,6 +34,12 @@ class RuntimeExecutor:
         self.transport.close()
 
     def execute(self, db, action: Action, capability: CapabilityDefinition, *, ignore_cancellation: bool = False) -> dict:
+        with measure("tool.execute", action_id=action.id, capability=capability.name) as metadata:
+            result = self._execute(db, action, capability, ignore_cancellation=ignore_cancellation)
+            metadata["status"] = result.get("status", "success")
+            return result
+
+    def _execute(self, db, action: Action, capability: CapabilityDefinition, *, ignore_cancellation: bool = False) -> dict:
         bound_capability = registry.get_bound(
             action.capability_name,
             action.capability_version,

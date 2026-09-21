@@ -42,3 +42,39 @@
     分别确认 DNS 或主机地址、端口、路径、协议以及应用监听地址。404 常表示路径错误，连接拒绝通常表示端口未监听，超时更可能与网络、防火墙或应用阻塞有关。容器处于 running 时仍可能出现这些问题。
 
     先用只读请求复核实际响应，再更正项目环境中的健康检查配置。不要因为进程存在就忽略健康端点失败。
+
+- id: docker_resource_and_dependency_failures
+  title: 容器反复重启、内存不足、磁盘满和依赖未就绪
+  summary: 先用状态、日志和资源证据区分原因，restart 不会修复所有底层故障。
+  tags: [容器重启, restarting, OOM, 137, 磁盘满, no space left, 依赖, 数据库连接]
+  content: |
+    ## 先收集最小证据
+    在目标项目工作目录，由授权运维人员执行以下只读示例，Compose 文件不同需指定正确文件：
+    ```sh
+    docker compose ps -a
+    docker compose logs --tail=100 backend
+    df -h
+    df -i
+    ```
+    backend 是示例服务名。Agent 是否可执行这些检查仍以注册能力为准；日志分享前应脱敏。
+
+    ## 按证据分支
+    退出码 137 可能与 SIGKILL 有关，需结合 OOMKilled、宿主内存与事件确认，不能只凭退出码断言 OOM。磁盘满应区分容量与 inode 耗尽，确定是哪块挂载点；不要直接清理卷或执行全局 prune。
+    数据库连接错误要区分依赖尚未就绪、DNS、凭据及连接数耗尽。容器启动顺序不等于业务 readiness。反复重启要结合最近日志、退出原因和启动参数，不应通过无限增加重试掩盖故障。
+
+    ## 修复验收
+    原因明确后由授权人员或受控能力处理资源、配置、镜像或依赖，再确认稳定 running、适用的 healthcheck 及应用端点。需要增加资源或更改持久化配置的操作不能因属于排障就跳过审批。
+
+- id: docker_ports_and_daemon
+  title: Docker daemon 不可用或端口冲突
+  summary: 区分管理接口不可达与业务端口占用，避免对错误对象反复重启。
+  tags: [docker daemon, cannot connect, 端口冲突, address already in use, port allocated]
+  content: |
+    ## Docker 管理接口
+    Cannot connect to the Docker daemon 可能来自 daemon 未启动、错误 Docker context、socket 不存在或权限不足。应在目标 SSH 用户的环境检查 Docker 上下文和服务状态；Ops 自身容器正常不代表目标服务器 Docker 可用。
+
+    ## 端口占用
+    启动报告 port is already allocated 时，先识别目标主机上占用端口的进程或其他容器，核对 Compose ports。不要自动停止其他项目释放端口。容器内部服务端口、宿主映射端口和登记健康 URL 需要保持一致。
+
+    ## 处理结果
+    恢复 daemon 访问或经确认修改端口后重新创建受影响服务，再检查端口监听与 HTTP 响应。修改 Compose 文件不一定会由 restart 应用，是否需要重建应依据实际变更。

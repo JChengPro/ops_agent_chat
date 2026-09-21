@@ -75,7 +75,10 @@ def ready(request: Request, db: Session = Depends(get_db)) -> dict:
     if not agent_ready:
         raise HTTPException(status_code=503, detail="Agent graph is not ready")
     worker_cutoff = datetime.now(timezone.utc) - timedelta(seconds=15)
-    worker_ready = db.scalar(select(AgentWorker.id).where(AgentWorker.status == "running", AgentWorker.last_seen_at >= worker_cutoff).limit(1))
+    worker_query = select(AgentWorker.id).where(AgentWorker.status == "running", AgentWorker.last_seen_at >= worker_cutoff)
+    if settings.task_broker == "rabbitmq":
+        worker_query = worker_query.where(AgentWorker.id.like("consumer-%"))
+    worker_ready = db.scalar(worker_query.limit(1))
     if not worker_ready:
         raise HTTPException(status_code=503, detail="Agent worker is not ready")
     return {

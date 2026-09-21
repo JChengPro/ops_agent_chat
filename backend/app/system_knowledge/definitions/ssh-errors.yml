@@ -33,6 +33,16 @@
   content: |
     这可能是服务器重装、IP 指向变化，也可能是中间人攻击。先通过可信渠道在目标服务器上读取实际公钥指纹，确认主机身份和变更原因；确认无误后再更新 Connection 的 Host Key 指纹并测试连接。不得关闭严格主机校验继续执行。
 
+    ## 具体检查位置
+    通过云控制台、现场终端或其他已确认可信的管理通道登录目标服务器，读取实际使用的主机公钥，例如：
+    ```sh
+    ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
+    ```
+    这是服务器身份的指纹，不是用户登录公钥的指纹。若服务器使用其他 Host Key 算法，应检查相应主机公钥。不要仅凭未验证网络上的 ssh-keyscan 输出认定主机可信。
+
+    ## 修复与验收
+    先核对 IP、DNS、端口和主机重装记录，再把确认后的 SHA256 指纹更新到正确环境的 Connection。随后重新执行只读服务查询，检查主机校验通过和服务列表正确。若无法解释指纹变化，保留停止连接状态并联系维护者；此时没有取得新的业务服务状态。
+
 - id: ssh_connection_timeout
   title: SSH 连接超时
   summary: 在连接截止时间内未能与目标 SSH 服务建立连接。
@@ -53,3 +63,43 @@
   tags: [ssh, command, timeout, execution-unknown]
   content: |
     超时不等于命令一定没有执行。对于变更操作，应把结果视为未知，先通过独立只读检查确认目标当前状态，再决定是否重试。不得自动重放可能已经生效的变更命令。
+
+- id: ssh_first_connection_setup
+  title: 首次 SSH 接入：生成密钥、安装公钥与容器挂载
+  summary: 公钥放目标服务器，私钥放 Ops 部署端，网页保存容器路径与可信主机指纹。
+  tags: [首次接入, 生成密钥, 公钥, 私钥引用, 挂载, ssh-keygen, ssh-copy-id]
+  content: |
+    ## 三个位置
+    目标服务器保存被授权用户的公钥；Ops 部署主机保管私钥并挂载给 Backend 和 Worker；浏览器只登记引用路径，不负责上传私钥。SSH 用户可以是已存在的受限运维账号，不要求必须新建一个固定名字的用户。
+
+    ## 生成与安装示例
+    在 Ops 部署主机上为该连接准备专用密钥，先确认没有同名文件：
+    ```sh
+    mkdir -p secrets
+    ssh-keygen -t ed25519 -f secrets/project_ssh_key
+    ssh-copy-id -i secrets/project_ssh_key.pub opsagent@your-server
+    ```
+    将示例主机和用户换成真实目标。ssh-copy-id 需要已有授权登录方式，否则通过可信控制台安装公钥。目标用户 ~/.ssh 通常为 700，authorized_keys 为 600，属主必须正确。当前网页不提供私钥口令输入；不要假设加密私钥会自动解锁。
+
+    ## 挂载与配置
+    按当前 Compose 把宿主 secrets 目录只读挂载到 Backend 和 Worker 的 /run/secrets，网页私钥引用填写 /run/secrets/project_ssh_key。不同项目分别登记对应连接。只改连接名称不会生成或复制文件。
+    在 Ops 部署目录检查两个执行侧是否可读：
+    ```sh
+    docker compose exec -T backend test -r /run/secrets/project_ssh_key
+    docker compose exec -T worker test -r /run/secrets/project_ssh_key
+    ```
+    这两条检查不输出密钥正文。修改挂载后重新创建容器，再用只读服务查询验证认证和目标范围。
+
+- id: ssh_runtime_permissions
+  title: SSH 登录成功但没有 Docker 或 sudo 权限
+  summary: SSH 认证与操作权限不同，命令以登记用户身份运行。
+  tags: [sudo, 权限不足, permission denied, docker.sock, 运维用户, root]
+  content: |
+    ## 判断失败阶段
+    登录成功只说明账号凭据有效，不能保证能读取工作目录、连接 Docker daemon 或修改服务。检查失败证据是文件权限、Docker socket 权限还是命令不存在，再由维护者核对目标用户的权限。
+
+    ## 授权边界
+    系统不会因为 LLM 提出要求自动获得 sudo 权限，也不提供任意交互式 sudo 密码输入。需要特权的能力必须由确定性实现和目标机授权共同支持。不要把全量免密 sudo 或 chmod 777 当作通用修复；Docker 组通常具有接近主机管理员的能力，加入前应评估范围。
+
+    ## 验收
+    用同一 SSH 用户确认登记目录可读、已支持运行时命令可执行，再通过 Ops 做只读查询。受控测试变更仍需要走 Policy、审批和 verifier；能手工执行某个命令并不代表它已经是 Agent 的注册能力。

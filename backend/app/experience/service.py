@@ -15,6 +15,7 @@ from app.models.experience import ExperienceChunk, ExperienceItem
 from app.models.agent import ModelCall
 from app.experience.chunking import chunk_document
 from app.reranking.service import RerankDocument, Reranker, configured_rerank_cache, configured_reranker
+from app.profiling import measure, profiled
 
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,7 @@ def index_experience(
     }
 
 
+@profiled("rag.search")
 def search_experience(
     db: Session,
     project_id: int,
@@ -211,203 +213,237 @@ def search_experience(
             or_(ExperienceItem.environment_id.is_(None), ExperienceItem.environment_id == environment_id)
         )
     lexical_rows: list[tuple[ExperienceChunk, ExperienceItem]] = []
-    if words:
-        search_query = func.plainto_tsquery("simple", " ".join(words))
-        search_vector = func.to_tsvector("simple", ExperienceChunk.search_text)
-        like_conditions = [ExperienceChunk.search_text.ilike(f"%{word}%") for word in words]
-        lexical_score = func.ts_rank_cd(search_vector, search_query) + sum(
-            (case((condition, 1.0), else_=0.0) for condition in like_conditions),
-            start=0.0,
-        )
-        lexical_rows = db.execute(
-            base_statement.where(or_(search_vector.op("@@")(search_query), *like_conditions))
-            .order_by(lexical_score.desc(), ExperienceChunk.id)
-            .limit(candidate_limit)
-        ).all()
-        lexical_rows.sort(
-            key=lambda row: (
-                -lexical_relevance_score(
-                    query,
-                    title=row[1].title,
-                    heading_path=row[0].heading_path or [],
-                    content=row[0].content,
-                ),
-                row[0].id,
+    with measure("rag.lexical") as lexical_profile:
+        if words:
+            search_query = func.plainto_tsquery("simple", " ".join(words))
+            search_vector = func.to_tsvector("simple", ExperienceChunk.search_text)
+            like_conditions = [ExperienceChunk.search_text.ilike(f"%{word}%") for word in words]
+            lexical_score = func.ts_rank_cd(search_vector, search_query) + sum(
+                (case((condition, 1.0), else_=0.0) for condition in like_conditions),
+                start=0.0,
             )
-        )
+            lexical_rows = db.execute(
+                base_statement.where(or_(search_vector.op("@@")(search_query), *like_conditions))
+                .order_by(lexical_score.desc(), ExperienceChunk.id)
+                .limit(candidate_limit)
+            ).all()
+            lexical_rows.sort(
+                key=lambda row: (
+                    -lexical_relevance_score(
+                        query,
+                        title=row[1].title,
+                        heading_path=row[0].heading_path or [],
+                        content=row[0].content,
+                    ),
+                    row[0].id,
+                )
+            )
+        lexical_profile["candidate_count"] = len(lexical_rows)
+        if not words:
+            lexical_profile["status"] = "skipped"
 
     vector_rows: list[tuple[ExperienceChunk, ExperienceItem]] = []
     embedding_error = None
+    vector_attempted = False
     try:
-        provider = embedder or configured_embedding_provider()
-        if provider:
-            vectors = provider.embed([query])
-            if len(vectors) != 1:
-                raise RuntimeError("Embedding provider returned the wrong number of query vectors")
-            distance = ExperienceChunk.embedding.cosine_distance(vectors[0])
-            vector_rows = db.execute(
-                base_statement.where(ExperienceChunk.embedding.is_not(None))
-                .order_by(distance, ExperienceChunk.id)
-                .limit(candidate_limit)
-            ).all()
+        with measure("rag.embedding") as embedding_profile:
+            provider = embedder or configured_embedding_provider()
+            if provider:
+                query_embed = getattr(provider, "embed_query", None)
+                vectors = (query_embed(query, project_id=project_id, environment_id=environment_id)
+                           if query_embed else provider.embed([query]))
+                if len(vectors) != 1:
+                    raise RuntimeError("Embedding provider returned the wrong number of query vectors")
+            else:
+                embedding_profile.update(status="skipped", reason="not_configured")
+        with measure("rag.vector") as vector_profile:
+            vector_attempted = True
+            if provider:
+                distance = ExperienceChunk.embedding.cosine_distance(vectors[0])
+                vector_rows = db.execute(
+                    base_statement.where(ExperienceChunk.embedding.is_not(None))
+                    .order_by(distance, ExperienceChunk.id)
+                    .limit(candidate_limit)
+                ).all()
+            else:
+                vector_profile.update(status="skipped", reason="embedding_unavailable")
+            vector_profile["candidate_count"] = len(vector_rows)
     except Exception as exc:  # noqa: BLE001
         embedding_error = type(exc).__name__
         logger.warning("Experience vector search failed; using lexical results: %s", embedding_error)
+        if not vector_attempted:
+            with measure("rag.vector", status="skipped", reason="embedding_failed"):
+                pass
 
-    rows_by_id: dict[int, tuple[ExperienceChunk, ExperienceItem]] = {}
-    for chunk, item in [*lexical_rows, *vector_rows]:
-        rows_by_id[chunk.id] = (chunk, item)
-    fused = reciprocal_rank_fusion(
-        {
-            "lexical": [chunk.id for chunk, _ in lexical_rows],
-            "vector": [chunk.id for chunk, _ in vector_rows],
-        }
-    )
-    rrf_ranked_ids = sorted(fused, key=lambda identifier: (-fused[identifier]["score"], identifier))
-    rerank_candidates = rrf_ranked_ids[: settings.rerank_candidate_limit]
-    rerank_source_count = len({rows_by_id[item][1].id for item in rerank_candidates})
+    with measure("rag.rrf") as rrf_profile:
+        rows_by_id: dict[int, tuple[ExperienceChunk, ExperienceItem]] = {}
+        for chunk, item in [*lexical_rows, *vector_rows]:
+            rows_by_id[chunk.id] = (chunk, item)
+        fused = reciprocal_rank_fusion(
+            {
+                "lexical": [chunk.id for chunk, _ in lexical_rows],
+                "vector": [chunk.id for chunk, _ in vector_rows],
+            }
+        )
+        rrf_ranked_ids = sorted(fused, key=lambda identifier: (-fused[identifier]["score"], identifier))
+        rerank_candidates = rrf_ranked_ids[: settings.rerank_candidate_limit]
+        rerank_source_count = len({rows_by_id[item][1].id for item in rerank_candidates})
+        rrf_profile["candidate_count"] = len(rrf_ranked_ids)
+
     rerank_scores: dict[int, float] = {}
     rerank_error = None
     rerank_applied = False
     rerank_cache_hit = False
     rerank_skipped_reason = None
-    active_reranker = reranker
-    if rerank_source_count <= limit:
-        rerank_skipped_reason = "source_count_not_above_result_limit"
-    else:
-        if active_reranker is None and run_id:
-            try:
-                active_reranker = configured_reranker(db, run_id)
-            except Exception as exc:  # noqa: BLE001
-                rerank_error = type(exc).__name__
-        if active_reranker is None:
-            rerank_skipped_reason = "reranker_disabled_or_unavailable"
-    if active_reranker and rerank_source_count > limit:
-        started = time.monotonic()
-        document_map = {f"doc_{index}": identifier for index, identifier in enumerate(rerank_candidates)}
-        documents = [
-            RerankDocument(
-                id=document_id,
-                text=(
-                    f"Title: {rows_by_id[identifier][1].title}\n"
-                    f"Section: {' / '.join(rows_by_id[identifier][0].heading_path or [])}\n"
-                    f"Content:\n{rows_by_id[identifier][0].content}"
-                ),
-            )
-            for document_id, identifier in document_map.items()
-        ]
-        request_hash = hashlib.sha256(
-            json.dumps(
-                {"query": query, "chunk_keys": [rows_by_id[item][0].chunk_key for item in rerank_candidates]},
-                ensure_ascii=True,
-                sort_keys=True,
-            ).encode()
-        ).hexdigest()
-        status = "success"
-        response_json: dict[str, Any] = {}
-        try:
-            cache = configured_rerank_cache()
-            cache_key = hashlib.sha256(
+    with measure("rag.rerank") as rerank_profile:
+        active_reranker = reranker
+        if rerank_source_count <= limit:
+            rerank_skipped_reason = "source_count_not_above_result_limit"
+        else:
+            if active_reranker is None and run_id:
+                try:
+                    active_reranker = configured_reranker(db, run_id)
+                except Exception as exc:  # noqa: BLE001
+                    rerank_error = type(exc).__name__
+            if active_reranker is None:
+                rerank_skipped_reason = "reranker_disabled_or_unavailable"
+        if active_reranker and rerank_source_count > limit:
+            started = time.monotonic()
+            document_map = {f"doc_{index}": identifier for index, identifier in enumerate(rerank_candidates)}
+            documents = [
+                RerankDocument(
+                    id=document_id,
+                    text=(
+                        f"Title: {rows_by_id[identifier][1].title}\n"
+                        f"Section: {' / '.join(rows_by_id[identifier][0].heading_path or [])}\n"
+                        f"Content:\n{rows_by_id[identifier][0].content}"
+                    ),
+                )
+                for document_id, identifier in document_map.items()
+            ]
+            request_hash = hashlib.sha256(
                 json.dumps(
-                    {
-                        "project_id": project_id,
-                        "environment_id": environment_id,
-                        "provider": active_reranker.provider_name,
-                        "model": active_reranker.model,
-                        "query": " ".join(query.casefold().split()),
-                        "chunks": [
-                            [rows_by_id[item][0].chunk_key, rows_by_id[item][0].content_hash]
-                            for item in rerank_candidates
-                        ],
-                    },
+                    {"query": query, "chunk_keys": [rows_by_id[item][0].chunk_key for item in rerank_candidates]},
                     ensure_ascii=True,
                     sort_keys=True,
                 ).encode()
             ).hexdigest()
-            ranked = cache.get(cache_key)
-            if ranked is None:
-                ranked = active_reranker.rerank(query, documents)
-                cache.set(cache_key, ranked)
-            else:
-                rerank_cache_hit = True
-                status = "cached"
-            rerank_scores = {document_map[item.id]: item.score for item in ranked}
-            rerank_candidates = sorted(
-                rerank_candidates,
-                key=lambda identifier: (-rerank_scores[identifier], rrf_ranked_ids.index(identifier)),
-            )
-            rerank_applied = True
-            response_json = {
-                "ranked_chunk_keys": [rows_by_id[item][0].chunk_key for item in rerank_candidates],
-                "scores": [rerank_scores[item] for item in rerank_candidates],
-            }
-        except Exception as exc:  # noqa: BLE001
-            status = "failed"
-            rerank_error = type(exc).__name__
-            response_json = {"error": rerank_error}
-            logger.warning("Experience reranking failed; using RRF results: %s", rerank_error)
-        finally:
-            if run_id:
-                db.add(
-                    ModelCall(
-                        run_id=run_id,
-                        provider=active_reranker.provider_name,
-                        model=active_reranker.model,
-                        purpose="retrieval_rerank",
-                        prompt_version="rerank-1",
-                        latency_ms=int((time.monotonic() - started) * 1000),
-                        status=status,
-                        request_hash=request_hash,
-                        response_json=response_json,
-                    )
+            status = "success"
+            response_json: dict[str, Any] = {}
+            try:
+                cache = configured_rerank_cache()
+                cache_key = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "project_id": project_id,
+                            "environment_id": environment_id,
+                            "provider": active_reranker.provider_name,
+                            "model": active_reranker.model,
+                            "configuration": getattr(active_reranker, "cache_identity", None),
+                            "prompt_version": "rerank-1",
+                            "query": " ".join(query.casefold().split()),
+                            "chunks": [
+                                [rows_by_id[item][0].chunk_key, rows_by_id[item][0].content_hash]
+                                for item in rerank_candidates
+                            ],
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                ranked = cache.get(cache_key)
+                if ranked is None:
+                    ranked = active_reranker.rerank(query, documents)
+                    cache.set(cache_key, ranked)
+                else:
+                    rerank_cache_hit = True
+                    status = "cached"
+                rerank_scores = {document_map[item.id]: item.score for item in ranked}
+                rerank_candidates = sorted(
+                    rerank_candidates,
+                    key=lambda identifier: (-rerank_scores[identifier], rrf_ranked_ids.index(identifier)),
                 )
-                db.flush()
-    ranked_ids = select_diverse_chunks(
-        rerank_candidates if rerank_applied else rrf_ranked_ids,
-        rows_by_id,
-        limit=limit,
-        max_chunks_per_item=settings.rag_max_chunks_per_item,
-        context_max_chars=settings.rag_context_max_chars,
-    )
-    return {
-        "query": query,
-        "items": [
-            {
-                "item_id": rows_by_id[identifier][1].id,
-                "title": rows_by_id[identifier][1].title,
-                "content": rows_by_id[identifier][0].content,
-                "chunk_key": rows_by_id[identifier][0].chunk_key,
-                "source_ref": rows_by_id[identifier][0].source_ref,
-                "heading_path": rows_by_id[identifier][0].heading_path,
-                "trust_status": rows_by_id[identifier][1].trust_status,
-                "source_type": rows_by_id[identifier][1].source_type,
-                "score": rerank_scores.get(identifier, fused[identifier]["score"]),
-                "rrf_score": fused[identifier]["score"],
-                "rerank_score": rerank_scores.get(identifier),
-                "lexical_score": lexical_relevance_score(
-                    query,
-                    title=rows_by_id[identifier][1].title,
-                    heading_path=rows_by_id[identifier][0].heading_path or [],
-                    content=rows_by_id[identifier][0].content,
-                ),
-                "ranks": fused[identifier]["ranks"],
-            }
-            for identifier in ranked_ids
-        ],
-        "retrieval_method": (
-            "hybrid_rrf_rerank" if rerank_applied and vector_rows
-            else "lexical_rerank" if rerank_applied
-            else "hybrid_rrf" if vector_rows
-            else "lexical"
-        ),
-        "embedding_error": embedding_error,
-        "rerank_applied": rerank_applied,
-        "rerank_cache_hit": rerank_cache_hit,
-        "rerank_error": rerank_error,
-        "rerank_skipped_reason": rerank_skipped_reason,
-        "rerank_candidate_count": len(rerank_candidates),
-        "rerank_source_count": rerank_source_count,
-        "result_count": len(ranked_ids),
-        "context_char_count": sum(len(rows_by_id[item][0].content) for item in ranked_ids),
-        "searched_at": datetime.now(timezone.utc).isoformat(),
-    }
+                rerank_applied = True
+                response_json = {
+                    "ranked_chunk_keys": [rows_by_id[item][0].chunk_key for item in rerank_candidates],
+                    "scores": [rerank_scores[item] for item in rerank_candidates],
+                }
+            except Exception as exc:  # noqa: BLE001
+                status = "failed"
+                rerank_error = type(exc).__name__
+                response_json = {"error": rerank_error}
+                logger.warning("Experience reranking failed; using RRF results: %s", rerank_error)
+            finally:
+                if run_id:
+                    db.add(
+                        ModelCall(
+                            run_id=run_id,
+                            provider=active_reranker.provider_name,
+                            model=active_reranker.model,
+                            purpose="retrieval_rerank",
+                            prompt_version="rerank-1",
+                            latency_ms=int((time.monotonic() - started) * 1000),
+                            status=status,
+                            request_hash=request_hash,
+                            response_json=response_json,
+                        )
+                    )
+                    db.flush()
+        rerank_profile.update(
+            status="failed" if rerank_error else "success" if rerank_applied else "skipped",
+            rerank_cache_hit=rerank_cache_hit, candidate_count=len(rerank_candidates),
+            source_count=rerank_source_count, skipped_reason=rerank_skipped_reason,
+            error_type=rerank_error,
+        )
+
+    with measure("rag.result_assembly") as assembly_profile:
+        ranked_ids = select_diverse_chunks(
+            rerank_candidates if rerank_applied else rrf_ranked_ids,
+            rows_by_id,
+            limit=limit,
+            max_chunks_per_item=settings.rag_max_chunks_per_item,
+            context_max_chars=settings.rag_context_max_chars,
+        )
+        assembly_profile["result_count"] = len(ranked_ids)
+        return {
+            "query": query,
+            "items": [
+                {
+                    "item_id": rows_by_id[identifier][1].id,
+                    "title": rows_by_id[identifier][1].title,
+                    "content": rows_by_id[identifier][0].content,
+                    "chunk_key": rows_by_id[identifier][0].chunk_key,
+                    "source_ref": rows_by_id[identifier][0].source_ref,
+                    "heading_path": rows_by_id[identifier][0].heading_path,
+                    "trust_status": rows_by_id[identifier][1].trust_status,
+                    "source_type": rows_by_id[identifier][1].source_type,
+                    "score": rerank_scores.get(identifier, fused[identifier]["score"]),
+                    "rrf_score": fused[identifier]["score"],
+                    "rerank_score": rerank_scores.get(identifier),
+                    "lexical_score": lexical_relevance_score(
+                        query,
+                        title=rows_by_id[identifier][1].title,
+                        heading_path=rows_by_id[identifier][0].heading_path or [],
+                        content=rows_by_id[identifier][0].content,
+                    ),
+                    "ranks": fused[identifier]["ranks"],
+                }
+                for identifier in ranked_ids
+            ],
+            "retrieval_method": (
+                "hybrid_rrf_rerank" if rerank_applied and vector_rows
+                else "lexical_rerank" if rerank_applied
+                else "hybrid_rrf" if vector_rows
+                else "lexical"
+            ),
+            "embedding_error": embedding_error,
+            "rerank_applied": rerank_applied,
+            "rerank_cache_hit": rerank_cache_hit,
+            "rerank_error": rerank_error,
+            "rerank_skipped_reason": rerank_skipped_reason,
+            "rerank_candidate_count": len(rerank_candidates),
+            "rerank_source_count": rerank_source_count,
+            "result_count": len(ranked_ids),
+            "context_char_count": sum(len(rows_by_id[item][0].content) for item in ranked_ids),
+            "searched_at": datetime.now(timezone.utc).isoformat(),
+        }

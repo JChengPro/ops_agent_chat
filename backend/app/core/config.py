@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     database_url: str = "postgresql+psycopg://opsagent:opsagent_password@localhost:5432/ops_agent_chat"
+    task_broker: str = Field(default="postgres", pattern="^(postgres|rabbitmq)$")
+    rabbitmq_url: str = "amqp://opsagent:opsagent_local@rabbitmq:5672/%2F"
+    redis_url: str = ""
+    embedding_cache_ttl_seconds: int = Field(default=86400, ge=0, le=604800)
+    knowledge_fast_path_enabled: bool = True
+    knowledge_context_max_chars: int = Field(default=6000, ge=1000, le=20000)
+    knowledge_answer_model: str = ""
+    knowledge_answer_base_url: str = ""
 
     llm_api_key: str = Field(
         default="",
