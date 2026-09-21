@@ -293,6 +293,8 @@ Skill 是版本化 SOP，来自 `skills/definitions/*/SKILL.md`，包含运行�
 
 #### 7.3 保守知识路由
 
+在项目历史检索之前，完整匹配系统手册标题或登记的旧标题别名、且仅附带“该怎么办”等有限说明后缀的问题可进入 `system_handbook`。该路径仅限 interactive 模式，受 `KNOWLEDGE_FAST_PATH_ENABLED` 控制；不选择 Skill，不提供工具，只将命中的公开系统条目交给一次紧凑回答。不会携带项目对话历史或把业务项目的同名 worker 当作 Ops 进程。引用沿用原条目校验和回答持久化，取消/终态检查保留。额外实时或操作指令、含糊指代及自动监控诊断不进入此路径。它是保守的手册识别，不是完整意图分类器。
+
 路由仅在 interactive 模式、有 `experience.search` 能力且问题长度受限时考虑命中。规则寻找历史、经验、知识库、文档等明确标记，并排除已知实时、变更、诊断或歧义表达。显式否定分句单独处理，混合“不要删除，但要重启”仍进入原流程。
 
 命中后记录 `plan_json.request_path=knowledge`，将状态设为只读并仅暴露 `experience.search`。第一次 decide 构造固定查询，第二次 decide 调用 `answer_knowledge`。图的审批、执行和持久化节点没有被另建的旁路取代。

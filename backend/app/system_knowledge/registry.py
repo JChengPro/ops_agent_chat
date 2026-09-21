@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -34,6 +35,7 @@ class SystemKnowledgeItem:
     tags: tuple[str, ...]
     document_id: str
     document_title: str
+    question_aliases: tuple[str, ...] = ()
 
     def public_dict(self, *, include_content: bool = True) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -72,6 +74,7 @@ class SystemKnowledgeRegistry:
                     tags=tuple(str(tag).strip() for tag in raw.get("tags") or () if str(tag).strip()),
                     document_id=document_id,
                     document_title=document_title,
+                    question_aliases=tuple(str(value) for value in raw.get("question_aliases", [])),
                 )
                 if not item.id or not item.title or not item.summary or not item.content:
                     raise ValueError(f"System knowledge entry in {path} is incomplete")
@@ -108,6 +111,18 @@ class SystemKnowledgeRegistry:
 
     def get(self, item_id: str) -> SystemKnowledgeItem | None:
         return self._items.get(item_id)
+
+    def match_handbook_question(self, query: str) -> SystemKnowledgeItem | None:
+        """Admit only a complete known heading plus a bounded explanation suffix."""
+        normalize = lambda text: re.sub(r"[\s，,。.!！?？：:、]+", "", text).casefold()
+        text = normalize(query)
+        suffixes = {"", "该怎么办", "怎么办", "怎么处理", "如何处理", "怎么排查", "如何排查", "是什么意思", "请解释一下"}
+        for item in self._items.values():
+            for heading in (item.title, *item.question_aliases):
+                heading = normalize(heading)
+                if heading and text.startswith(heading) and text[len(heading):] in suffixes:
+                    return item
+        return None
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         terms = lexical_terms(query)

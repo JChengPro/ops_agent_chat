@@ -178,6 +178,20 @@ class OpsAgentGraph:
     @profiled("skill.selection")
     def select_skill(self, state: AgentState) -> dict:
         capabilities = state.get("capabilities", [])
+        handbook = system_knowledge_registry.match_handbook_question(state["question"])
+        if (get_settings().knowledge_fast_path_enabled and handbook
+                and (state.get("execution_mode") or "interactive") == "interactive"):
+            with SessionLocal() as db:
+                run = db.get(AgentRun, state["run_id"])
+                if run:
+                    run.plan_json = {**(run.plan_json or {}), "request_path": "system_handbook",
+                                     "router_version": "handbook-1", "handbook_item_id": handbook.id}
+                self._step(db, state, "route_request", {"path": "system_handbook", "item_id": handbook.id})
+                db.commit()
+            return {"request_path": "system_handbook", "handbook_item_id": handbook.id,
+                    "read_only": True, "capabilities": [], "selected_skill": None,
+                    "context": {**state.get("context", {}), "read_only": True},
+                    "step_count": state.get("step_count", 0) + 1}
         if get_settings().knowledge_fast_path_enabled and knowledge_route(
             state["question"], capabilities, execution_mode=state.get("execution_mode") or "interactive",
         ):
@@ -349,14 +363,20 @@ class OpsAgentGraph:
                             "pending_calls": [], "answer": response.answer,
                             "claims": [item.model_dump(mode="json") for item in response.claims],
                             "step_count": state.get("step_count", 0) + 1}
-                if not state.get("context", {}).get("project_selected") and not self.gateway.provider:
-                    matches = system_knowledge_registry.search(state["question"], limit=3)["items"]
+                handbook_mode = state.get("request_path") == "system_handbook"
+                if handbook_mode or (not state.get("context", {}).get("project_selected") and not self.gateway.provider):
+                    if handbook_mode:
+                        item = system_knowledge_registry.get(state["handbook_item_id"])
+                        matches = [item.public_dict()] if item else []
+                    else:
+                        matches = system_knowledge_registry.search(state["question"], limit=3)["items"]
                     response = self.gateway.answer_general(
                         db,
                         run_id=state["run_id"],
                         question=state["question"],
-                        history=state.get("history", []),
+                        history=[] if handbook_mode else state.get("history", []),
                         system_knowledge=matches,
+                        guidance_only=handbook_mode,
                         cancel_check=lambda: self._run_cancelled(state["run_id"]),
                     )
                     request = {
@@ -366,9 +386,9 @@ class OpsAgentGraph:
                         "requested_effect": "none",
                         "subjects": [],
                         "desired_output": "answer",
-                        "constraints": ["no project environment selected"],
+                        "constraints": ["system handbook guidance only; no runtime observation"] if handbook_mode else ["no project environment selected"],
                         "confidence": 0.7,
-                        "summary": "通用聊天直接回答",
+                        "summary": "系统手册说明，不检查项目运行状态" if handbook_mode else "通用聊天直接回答",
                     }
                     run.request_json = request
                     run.plan_json = {

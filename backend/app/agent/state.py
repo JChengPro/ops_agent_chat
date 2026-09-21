@@ -17,6 +17,7 @@ class AgentState(TypedDict, total=False):
     selected_skill: dict[str, Any] | None
     request_path: str
     knowledge_searched: bool
+    handbook_item_id: str
     decision: dict[str, Any]
     pending_calls: list[dict[str, Any]]
     action_ids: list[str]

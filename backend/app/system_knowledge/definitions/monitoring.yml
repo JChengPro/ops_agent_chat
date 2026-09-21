@@ -29,12 +29,14 @@
     保留执行证据和 verifier 证据，并以最终只读观测为准。若稍后巡检确认状态正常，应把同一事件更新为已恢复，避免旧的失败弹窗继续误导用户。若仍异常，应停止重复自动修复，进入诊断或人工审批流程。
 
 - id: monitoring_worker_unavailable
+  question_aliases: [Worker 不可用导致巡检停止]
   title: Maintenance 或 Worker 不可用导致巡检停止
   summary: 默认 RabbitMQ 部署由 Maintenance 巡检，Worker 负责对话和异常诊断，回退模式才合并职责。
   tags: [monitoring, maintenance, worker, heartbeat, docker, 巡检停止]
   content: |
     ## 先确认运行模式
     TASK_BROKER=rabbitmq 时，Maintenance 负责采集、巡检和过期恢复；Worker 消费普通对话及监控诊断 Run。Maintenance 停止可能导致巡检停滞，即使普通聊天仍正常。Worker 停止可能让诊断排队，不能据此断言确定性巡检也停止。postgres 模式由原 Worker 兼任维护。
+    在 Ops 部署目录使用 `docker compose exec -T backend printenv TASK_BROKER` 检查应用容器的实际环境变量。不要在宿主 shell 执行 echo $TASK_BROKER 来判断容器模式，.env 不会自动导出为宿主环境变量，宿主输出为空也不代表 postgres 模式。若应用变量缺失，核对启动方式及 Settings 默认值，不根据空值猜测正在使用的模式。
 
     ## 检查与验收
     在 Ops 部署目录查看 docker compose ps 与 docker compose logs --tail=100 maintenance worker，核对数据库连接、SSH 挂载、环境开关和最近巡检时间。Maintenance 需要访问目标的私钥和网络，不能只检查 Worker 挂载。
