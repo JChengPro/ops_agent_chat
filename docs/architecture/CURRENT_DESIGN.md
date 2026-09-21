@@ -418,7 +418,7 @@ verified 表示来源经过确认，不证明内容描述的是实际历史事�
 
 #### 10.5 系统内置知识与项目经验不同
 
-[SystemKnowledgeRegistry](../../backend/app/system_knowledge/registry.py) 从仓库 YAML 加载八类产品与运维说明，按条目词法匹配，在 UI 聚合为分类文档。它不走项目经验的 pgvector/Rerank 流程，也不由用户在网页中修改。
+[SystemKnowledgeRegistry](../../backend/app/system_knowledge/registry.py) 从仓库 YAML 加载 12 类产品与运维手册、84 个小节，按条目词法匹配，在 UI 聚合为分类文档。覆盖入门、接入、部署、SSH、运行时、审批、巡检、模型与 RAG、队列、缓存、性能和 Web/API 排障。它不走项目经验的 pgvector/Rerank 流程，也不由用户在网页中修改。条目 ID 保持稳定以兼容历史引用；具体组织与验收见 [内置知识专项](../implementation/05-system-knowledge-expansion.md)。
 
 无项目通用回答可先本地检索这些条目，再将采用的 ID 保存到消息来源。系统知识不能授权新能力、改变 Policy 或证明目标环境状态。仓库定义更新后需要重建运行该代码的应用镜像。
 

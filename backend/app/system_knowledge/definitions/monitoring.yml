@@ -1,9 +1,9 @@
 - id: monitoring_disabled
   title: 主动巡检未开启
-  summary: 当前环境不会被 Worker 定期扫描，也不会产生主动告警或自动修复。
+  summary: 当前环境不会被维护调度定期扫描，也不会产生主动告警或自动修复。
   tags: [monitoring, disabled, environment]
   content: |
-    主动巡检和低风险自动修复是两个独立开关。巡检关闭时，即使自动修复开关显示开启，自动修复也不会生效。请在项目配置中确认当前环境的开关状态，并确认 Worker 正在运行。
+    主动巡检和低风险自动修复是两个独立开关。巡检关闭时，即使自动修复开关显示开启，自动修复也不会生效。请在项目配置中确认当前环境的开关状态。默认 RabbitMQ 部署依赖 Maintenance；PostgreSQL 回退模式依赖 Worker 的维护循环。
 
 - id: monitoring_connection_failed
   title: 主动巡检无法连接目标环境
@@ -29,11 +29,16 @@
     保留执行证据和 verifier 证据，并以最终只读观测为准。若稍后巡检确认状态正常，应把同一事件更新为已恢复，避免旧的失败弹窗继续误导用户。若仍异常，应停止重复自动修复，进入诊断或人工审批流程。
 
 - id: monitoring_worker_unavailable
-  title: Worker 不可用导致巡检停止
-  summary: Web 前端或 API 正常不代表主动巡检正常，巡检依赖独立 Worker 进程。
-  tags: [monitoring, worker, heartbeat, docker]
+  title: Maintenance 或 Worker 不可用导致巡检停止
+  summary: 默认 RabbitMQ 部署由 Maintenance 巡检，Worker 负责对话和异常诊断，回退模式才合并职责。
+  tags: [monitoring, maintenance, worker, heartbeat, docker, 巡检停止]
   content: |
-    检查 Worker 容器状态、日志和心跳记录，再检查数据库与消息循环是否可用。Worker exited 时不会继续主动巡检，也不会领取普通 AgentRun。修复 Worker 后应确认心跳恢复并手动触发或等待下一轮巡检。
+    ## 先确认运行模式
+    TASK_BROKER=rabbitmq 时，Maintenance 负责采集、巡检和过期恢复；Worker 消费普通对话及监控诊断 Run。Maintenance 停止可能导致巡检停滞，即使普通聊天仍正常。Worker 停止可能让诊断排队，不能据此断言确定性巡检也停止。postgres 模式由原 Worker 兼任维护。
+
+    ## 检查与验收
+    在 Ops 部署目录查看 docker compose ps 与 docker compose logs --tail=100 maintenance worker，核对数据库连接、SSH 挂载、环境开关和最近巡检时间。Maintenance 需要访问目标的私钥和网络，不能只检查 Worker 挂载。
+    恢复正确进程后等待下一轮，确认最近巡检时间更新和新证据出现，再看异常诊断 Run 是否被消费。不要靠删除事件或改状态制造“恢复”。
 
 - id: monitoring_scope_and_schedule
   title: 巡检范围、检查间隔与新问题如何纳入
@@ -45,7 +50,7 @@
     巡检不是全面应用压测或业务正确性检查。服务进程 running 不代表所有接口和业务功能都正常，文档里出现一条 HTTP URL 也不会自动将它加入周期检查。
 
     ## 频率和更新
-    MONITOR_INTERVAL_SECONDS 控制巡检调度间隔，但实际启动还受 Worker 可用性和任务耗时影响。检查最近巡检时间与事件，不要把配置间隔当作严格告警时限。
+    MONITOR_INTERVAL_SECONDS 控制巡检调度间隔，但实际启动还受维护进程可用性和任务耗时影响。检查最近巡检时间与事件，不要把配置间隔当作严格告警时限。
     目标 Compose 或已知服务配置变化后应更新环境和采集信息。聊天中发现并修复的新问题不会自动生成已审核巡检规则；需要开发人员补充判定、允许的处置和回归测试后发布。
 
 - id: monitoring_remediation_boundaries
@@ -61,4 +66,21 @@
     当前规则不能只凭容器已停止判断这是故障还是人为维护。计划停服务前，在正确环境关闭低风险自动修复；保留巡检可继续看到异常，若也不需要巡检则分别关闭。维护结束后明确恢复开关，并核对页面摘要。
 
     ## 大问题和自身故障
-    Critical 事件可触发只读诊断 Run 收集证据并给出建议，变更需要走后续受控流程。Ops 自己的 Worker 停止时无法继续巡检，前端停止时无法显示通知；当前站内机制不能替代独立外部监控。历史“已恢复”只描述该事件最后一次确认，不保证此刻仍健康。
+    Critical 事件可触发只读诊断 Run 收集证据并给出建议，变更需要走后续受控流程。Maintenance 停止影响默认部署的巡检，Worker 停止影响排队诊断，前端停止则无法显示通知；当前站内机制不能替代独立外部监控。历史“已恢复”只描述该事件最后一次确认，不保证此刻仍健康。
+
+- id: monitoring_enable_and_validate
+  title: 如何开启巡检并验证异常、恢复与诊断
+  summary: 先验证只读连接，再分别启用巡检和自动修复，按环境核对事件与最近检查时间。
+  tags: [开启巡检, 巡检验收, 告警, 事件恢复, 最近巡检, 诊断]
+  content: |
+    ## 开启前
+    选择正确项目与环境，确认运行时、工作目录、Connection 和已知服务。先用服务列表和状态查询验证目标，随后在环境配置开启巡检。第一次接入先保持自动修复关闭，避免把测试停止误当故障处理。
+
+    ## 观察流程
+    等待最近巡检时间更新，查看事件中的环境、目标、错误类别与发生时间。同一持续异常可以更新已有事件，恢复检查会更新其状态；旧事件不应当作当前全部服务状态。Critical 事件可生成只读诊断任务，仍需 Worker 与模型正常。
+
+    ## 验证方式
+    在允许的测试环境用已有异常或经批准的测试场景验收，分别观察异常被发现、证据保存和恢复被确认。不要为测试巡检停止真实生产服务。自动修复要单独验收已停止 Compose 服务、development/test 策略和 verifier 条件，不把普通巡检成功当自动修复通过。
+
+    ## 无更新时
+    检查开关、Maintenance、连接、运行时支持及任务耗时；有事件无诊断结果时再看 Worker、队列与模型。当前没有邮件、短信或 IM 的独立外部告警链。

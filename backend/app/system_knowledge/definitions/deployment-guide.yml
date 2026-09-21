@@ -1,6 +1,6 @@
 - id: deployment_start_and_health
   title: Ops 部署启动、服务分工与健康检查
-  summary: Web、API、Worker 和数据库职责不同，需要分别确认可用性。
+  summary: 八个服务分别提供页面、API、对话执行、发布、维护、数据库、消息队列和缓存。
   tags: [部署, 启动, docker compose up, backend, worker, postgres, 健康检查]
   content: |
     ## 准备与启动
@@ -14,7 +14,7 @@
     日志可能包含环境信息，分享前先脱敏。Backend 启动入口会执行 Alembic 迁移，迁移失败时应查看具体异常，不能跳过迁移假装启动成功。
 
     ## 服务职责与验收
-    frontend 提供网页及 API 反向代理，backend 接收请求，worker 执行 Agent 与巡检，postgres 保存业务数据和 checkpoint。网页能打开不代表 Worker 正常。
+    frontend 提供网页及 API 反向代理，backend 接收请求，worker 执行 AgentRun，outbox 发布投递通知，maintenance 执行采集、巡检和过期恢复；postgres 保存业务数据和 checkpoint，rabbitmq 分发通知，redis 缓存计算。网页能打开不代表消费者或维护进程正常。上述是默认 RabbitMQ 部署；PostgreSQL 回退模式的 Worker 兼任维护任务。
     /live 检查 API 进程存活，/ready 和 /health 检查更多依赖。完成容器检查后再登录、发起一条普通聊天、读取测试项目状态，分别确认模型和 Worker 链路。
 
 - id: deployment_network_access
@@ -41,9 +41,9 @@
     修改应用源码需要构建新镜像并重新创建服务；修改 .env 或 bind mount 后应重新创建相关容器，单纯 restart 不会重新加载 Compose 的容器配置。
     例如只调整 Ops 的密钥挂载后，在 Ops 部署目录运行：
     ```sh
-    docker compose up -d --force-recreate backend worker
+    docker compose up -d --force-recreate backend worker maintenance
     ```
-    不要把这个命令用于重建被管理的业务服务。开发者更新内置知识定义后也需更新 Backend、Worker 镜像，使两者加载同一版本。
+    不要把这个命令用于重建被管理的业务服务。开发者更新内置知识定义后需构建应用镜像，更新 Backend、Worker、Maintenance 和 Outbox，确保运行同一版本。宿主 docs 的挂载不包含镜像内 app/system_knowledge/definitions 的更新。
 
     ## 迁移与持久化
     账号、文档和聊天等数据在数据库卷中，重建应用容器通常保留它们。普通升级不要使用 docker compose down -v，它会删除 Compose 管理的数据卷。已有数据库用户密码不会随 POSTGRES_PASSWORD 环境变量自动改变。
@@ -70,3 +70,33 @@
 
     ## 恢复验证
     先在隔离数据库中使用 pg_restore 恢复，检查表、文档数量、账号登录及应用兼容性。实际生产替换需要维护窗口、备份当前数据和明确回退方案，不能让 Agent 直接拿示例覆盖正在使用的数据库。仅有备份文件不代表恢复演练通过。
+
+- id: deployment_configuration_reference
+  title: 首次部署需要填写哪些配置，环境变量怎样生效
+  summary: 先配置认证与数据库，再配置模型、消息队列和目标连接；示例值不代表实际凭据。
+  tags: [首次部署, .env, 环境变量, 配置清单, APP_SECRET_KEY, POSTGRES_PASSWORD]
+  content: |
+    ## 准备配置
+    在 Ops 仓库根目录以 .env.example 为模板创建 .env。核对 APP_SECRET_KEY、ADMIN_USERNAME、ADMIN_EMAIL、ADMIN_PASSWORD、POSTGRES_PASSWORD 与 DATABASE_URL；生产模式还有弱密钥和示例密码检查。真实凭据保存在部署端，不上传仓库。
+    LLM_API_KEY、LLM_BASE_URL、LLM_PROVIDER、LLM_MODEL 提供默认聊天模型。LLM_CREDENTIAL_ENCRYPTION_KEY 用于账号模型凭据保护，LLM_ALLOWED_BASE_URLS 控制允许的服务地址。Embedding 使用独立 EMBEDDING_* 配置，不能用切换聊天模型代替。
+
+    ## 消息与目标连接
+    Compose 默认 TASK_BROKER=rabbitmq。RABBITMQ_URL 要与已有 Broker 凭据一致；REDIS_URL 指向计算缓存。SSH 私钥由部署侧只读挂载，目标地址、工作目录与指纹在 Connection/Environment 中登记。
+
+    ## 生效与验证
+    改 .env 后重新创建受影响容器，restart 只重启原配置。先检查服务健康与登录，再做普通聊天和测试环境只读查询。已有管理员密码和已有数据库/Broker 用户不会随初始化变量自动重置；不能通过删除数据卷应用密码变更。
+
+- id: deployment_migrations_and_storage
+  title: 数据库迁移失败、pgvector 与 checkpoint 表怎么检查
+  summary: 业务表由 Alembic 管理，LangGraph 单独管理 checkpoint，升级要保留数据卷和加密材料。
+  tags: [数据库迁移, alembic, pgvector, checkpoint, revision, 升级失败]
+  content: |
+    ## 两套表管理
+    Backend 启动先执行 alembic upgrade head，再启动 API。业务表包括 Run、Action、Evidence、知识分块、Outbox 和 Profile。checkpoints、checkpoint_blobs、checkpoint_writes、checkpoint_migrations 由 LangGraph checkpointer 管理，不能把它们当成多余业务表删除。
+
+    ## 只读检查
+    在 Ops 部署目录检查 backend 日志和容器状态。Backend 能运行时执行 docker compose exec -T backend alembic current，记录当前 revision；不能运行时先查看启动日志中的迁移异常。
+    数据库使用 pgvector 镜像，维护者可在数据库会话查询 SELECT extname, extversion FROM pg_extension WHERE extname='vector';，确认扩展而非只看镜像名。现有向量列为 1536 维，修改模型维度需要正式数据迁移与索引重建方案。
+
+    ## 失败处理
+    区分连接认证、缺扩展、权限、迁移版本和表结构漂移。不要手动 stamp 到最新版本掩盖失败，也不要直接删除 revision 表。保留失败日志与备份，先在隔离副本验证修复和恢复，再处理实际部署。普通升级不执行 docker compose down -v。

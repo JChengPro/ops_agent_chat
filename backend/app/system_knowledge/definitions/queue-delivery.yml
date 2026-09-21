@@ -1,0 +1,85 @@
+- id: queue_delivery_architecture
+  title: RabbitMQ、Outbox 与 Worker 如何投递一次对话
+  summary: PostgreSQL 保存任务事实，Outbox 发布通知，RabbitMQ 唤醒消费者，Worker 原子领取 Run。
+  tags: [RabbitMQ, Outbox, 消息队列, 任务投递, 入队, 消费者, dispatch_version]
+  content: |
+    ## 从提交到执行
+    API 在同一个 PostgreSQL 事务中创建 AgentRun 与投递 Outbox 记录，提交成功后返回任务信息。Outbox 发布器读取已提交事件，将 Run 标识及入队版本发送给 RabbitMQ。Worker 收到通知后，仍须从数据库检查任务状态并原子领取，随后执行 Agent。
+    RabbitMQ 不保存审批权限，也不替代数据库中的 Run 状态。消息到达不等于任务已经执行，收到 HTTP 202 也只说明任务已被接受。
+
+    ## 为什么有两个队列概念
+    Outbox 避免出现数据库提交成功、消息发送失败就永久丢任务的窗口。Broker 暂时不可用时，Run 和待发布记录仍在数据库，发布器稍后重试。队列消息是执行通知，不是远程命令正文。
+
+    ## 组件职责
+    backend 接受与查询请求；outbox 发布通知；worker 消费 AgentRun；maintenance 处理采集、巡检与过期恢复。TASK_BROKER 必须在相关应用进程保持一致。当前 Compose 默认 rabbitmq，直接使用 Settings 时默认 postgres，不能把两种启动方式混为一谈。
+
+    ## 验收
+    在无副作用的测试问题上观察 queued、running、completed，核对相同 run_id 的步骤和最终回答。任务状态以数据库/API 为准，不能仅根据队列长度判断成功。
+
+- id: queue_run_stuck_queued
+  title: 对话一直 queued，RabbitMQ 有消息但 Worker 不消费
+  summary: 按数据库记录、发布器、Broker、消费者和租约顺序定位排队，不重复发送变更。
+  tags: [queued, 一直排队, 不消费, 没回复, RabbitMQ故障, 消息积压, Worker]
+  content: |
+    ## 先确定阶段
+    记录 run_id 和创建时间。queued 是未被领取；running 是已执行；waiting_for_approval 需要用户决定。先排除请求尚未创建、已取消或页面显示过时。
+
+    ## 部署端检查
+    在 Ops 部署目录执行只读检查：
+    ```sh
+    docker compose ps
+    docker compose logs --tail=100 outbox worker rabbitmq
+    docker compose exec -T rabbitmq rabbitmq-diagnostics -q ping
+    docker compose exec -T rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers
+    ```
+    日志分享前脱敏。ready 增多且无消费者，检查 worker 启动和 Broker 连接；unacknowledged 增多可能表示正在处理，需结合 Run 与模型耗时，不应直接认定卡死。消费者正常但任务未领取时，再检查 Run 状态、入队版本和租约。
+
+    ## 处理顺序
+    数据库正常但 Broker 不可达，修复 Broker 网络与账号；outbox 停止则恢复发布器；worker 停止则恢复消费者。已有长任务也会占用默认单消费者。恢复后跟踪原 run_id，确认开始执行，无需再次发送原问题。
+    不要清空队列、手动改 Run 为 completed，或复制一条生产变更来测试消费。租约或远程执行状态不明时先只读核验。
+
+- id: queue_broker_outage_recovery
+  title: RabbitMQ 消息队列宕机、密码修改与恢复后的任务处理
+  summary: Broker 故障不代表已接受的任务消失，恢复发布与消费后应核对原 Run。
+  tags: [RabbitMQ, 消息队列, 宕机, 密码修改, 连不上, 连接拒绝, AMQP, 凭据, RABBITMQ_URL, 恢复]
+  content: |
+    ## 确认依赖
+    检查 rabbitmq、outbox、worker 的状态与脱敏日志。AMQP 网络失败、鉴权失败、vhost 不存在和数据库失败是不同问题。RABBITMQ_URL 必须对应 Broker 用户、密码与 vhost；URL 中特殊字符需要编码，不能将带密码的完整 URL 发给他人。
+
+    ## 数据卷与账号
+    RABBITMQ_USER、RABBITMQ_PASSWORD 是初始化配置。已有数据卷的账号不会仅因修改 .env 自动轮换。应由维护者按 Broker 账号管理流程变更，再同步应用连接配置。不要用删除数据卷来修复密码不一致。
+
+    ## 恢复流程
+    恢复 Broker 服务和网络，确认发布器重新连接、消费者存在，再读取故障前原任务的状态。Outbox 可能重新发布通知，Worker 会按数据库状态和版本筛选。若原任务已 completed，不应因重新收到消息再次执行。
+
+    ## 验收边界
+    使用只读测试请求确认新任务完成，再检查故障期间任务是否仍排队。Broker 可连接不等于 SSH、模型和整个 Agent 都可用。进程在远端操作后失联时，必须遵循 execution_unknown 的复核流程。
+
+- id: queue_duplicates_and_concurrency
+  title: 重复消息是否重复执行，多 Worker 能否直接加速
+  summary: Run 状态与入队版本防止过期通知被消费，但不同 Run 的变更不会自动串行。
+  tags: [重复消息, 重复执行, 幂等, dispatch_version, 多Worker, 并发, exactly-once]
+  content: |
+    ## 重复通知
+    Broker ACK 与数据库提交不在同一个事务中，网络中断可能造成重复投递。系统依靠 Run 的状态、入队版本和原子领取处理重复或过期通知，而不是假定消息永远只到一次。审批恢复后的通知也必须对应新的入队版本。
+
+    ## 并发边界
+    同一 Run 的领取保护不等于两个不同 Run 对同一服务互斥。默认一个 Agent 消费者，增加消费者前应评估远程变更竞争、模型限流、连接容量和故障恢复。不要只为缩短排队直接把生产变更并发开大。
+
+    ## 未知执行
+    命令可能已在远端执行，但本地结果尚未提交。此时数据库防重也不能证明端到端 exactly-once。保留 Action 和 Evidence，执行新的只读检查，不删除消息或修改审批绕过恢复机制。
+
+- id: queue_postgres_fallback
+  title: RabbitMQ 模式如何切回 PostgreSQL 轮询
+  summary: 回退需要统一配置和进程职责，不能只改一个 Worker 的 TASK_BROKER。
+  tags: [TASK_BROKER, postgres, 回退, 轮询, 停用RabbitMQ, Maintenance]
+  content: |
+    ## 回退前
+    在维护窗口操作，先等待执行中的任务结束并检查未知动作，备份数据库。审批中的任务也需要保留状态，不做破坏性降级迁移。数据库仍是业务事实来源，无需删除 Outbox 表。
+
+    ## 切换职责
+    停止 Agent Worker、Outbox 发布器和独立 Maintenance，统一将 Backend 与 Worker 的 TASK_BROKER 设置为 postgres，再按部署配置重新创建这两个服务。旧 Worker 在该模式同时处理对话和维护任务，因此不能再启动独立 Maintenance 重复调度。
+    默认 Compose 的依赖仍包含 RabbitMQ、Redis；若目标是完全停用这些服务，还需要显式部署 override 调整依赖，不能仅修改环境变量就假定基础设施不再启动。
+
+    ## 验收与恢复
+    检查 Worker 心跳、只读聊天和巡检/采集任务，再核对待处理审批。重新启用 rabbitmq 时同样需要统一配置并恢复 Outbox、消费者和独立 Maintenance。配置切换不是重放远程操作的授权。

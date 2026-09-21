@@ -18,6 +18,10 @@ DOCUMENT_METADATA = {
     "approval-execution": ("审批与安全执行", "Action 审批、Hash 失效、幂等消费、Worker 租约与未知执行结果。"),
     "monitoring": ("主动巡检与自动修复", "巡检开关、连接异常、自动修复条件、验证失败与 Worker 可用性。"),
     "model-rag": ("模型与 RAG", "模型配置、结构化输出、Embedding、检索降级、向量维度和延迟取舍。"),
+    "queue-delivery": ("消息队列与任务投递", "RabbitMQ、事务 Outbox、任务排队、重复通知和投递故障恢复。"),
+    "redis-cache": ("Redis 计算缓存", "查询向量与重排缓存、过期与隔离、故障降级和缓存维护。"),
+    "performance-guide": ("性能分析与 Profiling", "按 run_id 查询时间线、识别模型与检索瓶颈、区分服务端与页面延迟。"),
+    "web-api-errors": ("Web 与 API 排障", "网页访问、登录错误、Nginx 代理、Docker DNS 和请求链路验证。"),
 }
 
 
@@ -109,8 +113,11 @@ class SystemKnowledgeRegistry:
         terms = lexical_terms(query)
         scored: list[tuple[int, str, SystemKnowledgeItem]] = []
         for item in self._items.values():
-            text = f"{item.id} {item.title} {item.summary} {' '.join(item.tags)} {item.content}".lower()
-            score = sum(text.count(term) for term in terms)
+            # Match topic fields first; repeated words in long handbooks add no weight.
+            fields = ((item.title, 4), (" ".join(item.tags), 3),
+                      (item.summary, 2), (item.content, 1), (item.id, 1))
+            score = sum(weight * sum(term in text.lower() for term in terms)
+                        for text, weight in fields)
             if score:
                 scored.append((score, item.id, item))
         scored.sort(key=lambda row: (-row[0], row[1]))

@@ -78,3 +78,37 @@
 
     ## 处理结果
     恢复 daemon 访问或经确认修改端口后重新创建受影响服务，再检查端口监听与 HTTP 响应。修改 Compose 文件不一定会由 restart 应用，是否需要重建应依据实际变更。
+
+- id: runtime_readonly_diagnosis_workflow
+  title: backend 服务异常时如何进行只读诊断
+  summary: 从范围、状态、日志、依赖到资源收集最小证据，不把一次异常直接归为根因。
+  tags: [只读诊断, backend挂了, 排障流程, 服务异常, 日志, 依赖]
+  content: |
+    ## 明确对象
+    先确认项目、环境、准确服务名和故障时间。相同服务器上不同 Compose 项目都可能有 backend，不能按名称直接操作。用户要求“不修改”时只收集信息，发现异常也不能顺便执行 restart。
+
+    ## 证据顺序
+    读取服务列表，区分停止、重启中、unhealthy 和缺失；查看目标服务状态及时间范围内的有界日志；按日志指向核查依赖、磁盘、内存、端口或健康端点。日志可能包含凭据和用户内容，输出必须脱敏且有大小限制。
+
+    ## 形成结论
+    将观察与推断分开，例如“健康检查超时”是现象，“数据库认证失败导致未就绪”需要相关日志与依赖证据。历史经验可以提供排查方向，不能证明本次根因。没有足够证据时列出待核对项，而不是无限读取日志。
+
+    ## 后续动作
+    给出与证据对应的建议，变更单独进入权限、Policy、审批与验证。当前未实现通用并行工具规划，多个观察可能依次执行；不能为了加速把未经治理的 Shell 批量发往目标。
+
+- id: runtime_adapter_support
+  title: Docker、Kubernetes、systemd 与 HTTP 支持范围有什么区别
+  summary: 运行时适配器只执行已登记能力，各类型的配置、验证和实际验收范围不同。
+  tags: [运行时支持, Kubernetes, systemd, Docker, HTTP, Namespace, known_services]
+  content: |
+    ## 不同配置
+    Compose 依赖目标目录与 Compose 资源；Kubernetes 依赖明确 Namespace 和资源；systemd 使用登记服务；HTTP 使用已登记健康端点与地址约束。运行时名称相同不代表不同环境共享授权范围。
+
+    ## 能力与验证
+    服务列表、状态、日志及支持的变更由 Registry 和 Adapter 决定，不是所有 kubectl、systemctl 或 curl 参数都允许。各类 verifier 用各自状态语义判断，不能用 Compose 的 running 规则代替 Deployment 副本条件。
+
+    ## 接入验收
+    先检查配置和只读能力，再在测试目标验证变更、取消与恢复。Kubernetes/systemd 的代码入口不等于你的实际集群或主机已经验收；HTTP 还需要 SSRF、固定地址及网络边界检查。不要把任意 URL 粘贴进文档就当成自动获准探测。
+
+    ## 不支持时
+    输出明确能力缺口，由维护者补充受控实现与测试。系统不会因为知识手册写了某条命令就允许任意远程执行。

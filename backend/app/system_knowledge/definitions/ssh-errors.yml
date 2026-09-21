@@ -3,14 +3,14 @@
   summary: Connection 没有登记私钥引用，系统不知道应读取哪个密钥文件。
   tags: [ssh, credential, configuration]
   content: |
-    在项目配置中填写目标主机、端口、受限 SSH 用户和私钥引用。私钥引用是 Backend、Worker 容器内的只读文件路径，不是浏览器本地路径，也不能填写私钥正文。保存后使用“测试连接”验证。不要关闭主机指纹校验来绕过配置错误。
+    在项目配置中填写目标主机、端口、受限 SSH 用户和私钥引用。私钥引用是 Backend、Worker、Maintenance 容器内的只读文件路径，不是浏览器本地路径，也不能填写私钥正文。保存后使用“测试连接”验证。不要关闭主机指纹校验来绕过配置错误。
 
 - id: ssh_credential_missing
   title: 运行容器中缺少 SSH 私钥
   summary: Connection 已登记私钥路径，但执行命令的容器中不存在该文件。
   tags: [ssh, credential, docker, secret]
   content: |
-    先确认宿主机密钥文件存在，再确认 docker-compose.yml 已把它以只读方式挂载到 Backend 和 Worker，并且 Connection 的私钥引用填写的是容器内路径。修改挂载后需要重新创建 Backend 和 Worker 容器；仅重启目标业务项目不能修复 Ops Agent 自身缺少密钥的问题。不要把私钥提交到 Git 或通过网页上传正文。
+    先确认宿主机密钥文件存在，再确认 docker-compose.yml 已把它以只读方式挂载到 Backend 和 Worker，并检查独立 Maintenance 的同路径挂载。Connection 的私钥引用填写容器内路径。修改挂载后需要重新创建这三个容器；仅重启目标业务项目不能修复 Ops Agent 自身缺少密钥的问题。不要把私钥提交到 Git 或通过网页上传正文。
 
 - id: ssh_credential_unreadable
   title: SSH 私钥存在但不可读
@@ -70,7 +70,7 @@
   tags: [首次接入, 生成密钥, 公钥, 私钥引用, 挂载, ssh-keygen, ssh-copy-id]
   content: |
     ## 三个位置
-    目标服务器保存被授权用户的公钥；Ops 部署主机保管私钥并挂载给 Backend 和 Worker；浏览器只登记引用路径，不负责上传私钥。SSH 用户可以是已存在的受限运维账号，不要求必须新建一个固定名字的用户。
+    目标服务器保存被授权用户的公钥；Ops 部署主机保管私钥并挂载给 Backend、Worker 和 Maintenance；浏览器只登记引用路径，不负责上传私钥。SSH 用户可以是已存在的受限运维账号，不要求必须新建一个固定名字的用户。
 
     ## 生成与安装示例
     在 Ops 部署主机上为该连接准备专用密钥，先确认没有同名文件：
@@ -82,13 +82,14 @@
     将示例主机和用户换成真实目标。ssh-copy-id 需要已有授权登录方式，否则通过可信控制台安装公钥。目标用户 ~/.ssh 通常为 700，authorized_keys 为 600，属主必须正确。当前网页不提供私钥口令输入；不要假设加密私钥会自动解锁。
 
     ## 挂载与配置
-    按当前 Compose 把宿主 secrets 目录只读挂载到 Backend 和 Worker 的 /run/secrets，网页私钥引用填写 /run/secrets/project_ssh_key。不同项目分别登记对应连接。只改连接名称不会生成或复制文件。
-    在 Ops 部署目录检查两个执行侧是否可读：
+    按当前 Compose 把宿主 secrets 目录只读挂载到 Backend、Worker 和 Maintenance 的 /run/secrets，网页私钥引用填写 /run/secrets/project_ssh_key。不同项目分别登记对应连接。只改连接名称不会生成或复制文件。
+    在 Ops 部署目录检查三个执行侧是否可读：
     ```sh
     docker compose exec -T backend test -r /run/secrets/project_ssh_key
     docker compose exec -T worker test -r /run/secrets/project_ssh_key
+    docker compose exec -T maintenance test -r /run/secrets/project_ssh_key
     ```
-    这两条检查不输出密钥正文。修改挂载后重新创建容器，再用只读服务查询验证认证和目标范围。
+    这些检查不输出密钥正文。修改挂载后重新创建容器，再用只读服务查询验证认证和目标范围；另检查采集与巡检，避免只有聊天侧具备私钥。
 
 - id: ssh_runtime_permissions
   title: SSH 登录成功但没有 Docker 或 sudo 权限
@@ -103,3 +104,20 @@
 
     ## 验收
     用同一 SSH 用户确认登记目录可读、已支持运行时命令可执行，再通过 Ops 做只读查询。受控测试变更仍需要走 Policy、审批和 verifier；能手工执行某个命令并不代表它已经是 Agent 的注册能力。
+
+- id: ssh_layered_diagnosis
+  title: SSH 错误应该按什么顺序排查
+  summary: 将地址网络、主机身份、用户认证、文件权限和远程执行分开验证，避免错误修复。
+  tags: [SSH排查顺序, 测试连接, 连不上服务器, 连接错误, 诊断步骤]
+  content: |
+    ## 第一层：地址和网络
+    核对 Connection 的主机、端口和从 Ops 容器到目标的路由。超时先看网络、防火墙与 sshd，连接拒绝先看监听。不要把网络超时直接当作 Key 失效。目标 localhost、浏览器 localhost 和容器 localhost 是不同位置。
+
+    ## 第二层：主机与用户身份
+    指纹不匹配先通过可信通道核验服务器身份，再考虑更新登记值；不能关闭严格检查。认证失败才核对 SSH 用户、公钥安装位置与私钥匹配。主机公钥和用户登录公钥用途不同，不能互换指纹。
+
+    ## 第三层：执行环境
+    测试连接成功后，再确认工作目录、Compose 文件和运行时命令权限。Backend 能连接而巡检失败时检查 Maintenance 的挂载与网络；手工终端成功不证明容器用户同样可读私钥。
+
+    ## 验收
+    每次只修正已确认的一层，再读取服务列表和状态。命令阶段超时尤其涉及变更时保留未知结果，先只读复核，不能按建连失败的思路重复发送命令。

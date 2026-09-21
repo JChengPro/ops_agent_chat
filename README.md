@@ -8,20 +8,6 @@ Ops Agent Chat 是一个面向个人开发者和小团队的聊天式智能运�
 
 文档分工：本 README 用于项目概览与快速开始；[当前详细设计](docs/architecture/CURRENT_DESIGN.md) 按“总体架构 → 子系统设计 → 部署与验证”展开，覆盖真实调用链、数据模型、RAG、Redis/RabbitMQ、安全执行和故障恢复。
 
-## 本轮升级与实测
-
-当前 Compose 默认启用 RabbitMQ 任务投递、Redis 计算缓存和保守的 Knowledge Path，并提供按 `run_id` 查询耗时的 Profiling 接口。
-
-| 同一历史经验查询，模型均为 qwen-plus | 服务端 AgentRun 耗时 |
-| --- | ---: |
-| 原流程，单次基线 | 53.16 秒 |
-| 升级后，三次实测 | 13.15 / 11.84 / 11.93 秒 |
-| 升级后中位数 | 11.93 秒，较基线降低 77.6% |
-
-主要收益来自知识查询减少模型决策次数及压缩回答上下文；Redis 减少重复 Embedding，RabbitMQ 改善任务投递。上述结果来自一个问题的小样本实验，不是所有请求的延迟承诺；实时诊断、变更与审批仍走原流程，剩余主要耗时仍在回答模型。
-
-实现、配置与回退见 [升级说明](docs/implementation/07-redis-rabbitmq-knowledge-path.md)；样本、故障演练、验证范围和已知问题见 [实测报告](test-results/13-v2-latency.md)。
-
 ## 项目解决什么问题
 
 传统运维通常需要在文档、监控页面、SSH 终端和部署工具之间反复切换。Ops Agent Chat 希望把这些步骤组织成一条可追踪流程：
@@ -112,10 +98,10 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 - 配置 Embedding 后使用 pgvector 向量召回与词法召回，并通过 RRF 融合；Embedding 未配置或调用失败时自动降级到词法检索。
 - 候选中的唯一文档数大于 Top-K 时，Agent 才使用当前用户配置的模型做 listwise rerank；小语料直接跳过，避免没有实际收益的慢模型调用。
 - 重排结果使用绑定项目、Environment、模型、Query 和 Chunk 内容 Hash 的短期缓存；模型超时、结构错误或缓存失效时保留原 RRF 顺序，不中断主流程。
-- Redis 共享查询 Embedding 和重排计算缓存；缓存故障自动回退，单次缓存 I/O 等待上限包含 DNS。升级设计、开关与回退见 [实施文档](docs/implementation/07-redis-rabbitmq-knowledge-path.md)，实测见 [性能报告](test-results/13-v2-latency.md)。
-- 可通过 `RERANK_*` 和 `RAG_*` 环境变量控制候选数、超时、缓存、每文档分块上限和上下文软预算。当前 DeepSeek 对照数据与取舍见 `docs/rag/RAG_ENGINEERING_DECISIONS_AND_EXPERIMENTS.md`。
-- 系统内置知识由开发者通过仓库定义维护，用户只能查看和检索，不能在网页中修改；按系统功能与账号、项目接入与文档管理、部署维护、SSH、Docker 与运行时、审批与执行、主动巡检、模型与 RAG 八份分类文档展示。每份文档包含多个可检索小节，接入和排障指南说明操作位置、步骤及验收方式。
-- 内置知识当前按条目进行词法检索，与项目文档的向量混合检索链路不同；新增知识需更新 Backend 和 Worker 镜像，不会自动从用户聊天生成巡检规则。
+- Redis 共享查询 Embedding 和重排计算缓存；缓存故障自动回退，单次缓存 I/O 等待上限包含 DNS。
+- 可通过 `RERANK_*` 和 `RAG_*` 环境变量控制候选数、超时、缓存、每文档分块上限和上下文软预算。
+- 系统内置知识以 12 份只读分类手册展示，覆盖入门、项目接入、部署、SSH、运行时、审批、巡检、模型与 RAG、消息队列、Redis、性能分析及 Web/API 排障。各手册按小节检索，提供前置条件、操作步骤、结果解释与验收方法。
+- 内置知识由开发者维护，采用本地词法检索，与项目文档的向量混合检索链路不同；发布时统一更新应用镜像，不会自动从用户聊天生成巡检规则。
 - 回答使用系统内置知识时会显示具体条目标题；引用可以点击并打开所属分类文档、定位到对应条目。新产生的通用回答未使用时也会明确标注，避免来源状态不透明。
 - 项目文档和系统知识都是辅助上下文，不能证明当前运行状态，也不能覆盖 Runtime Evidence、Capability、Policy 或审批要求。
 
@@ -124,7 +110,7 @@ LLM 负责理解问题和选择语义能力，最终执行参数由服务端结�
 - 独立 `agent_run_profile_spans` 保存阶段时间、耗时、状态、轮次、模型 Token 用量和已有 RAG 元数据，不复用 AgentStep 或 Audit。
 - `GET /api/agent-runs/{run_id}/profile` 返回时间线与 Top 耗时阶段，沿用 Run 所有者鉴权。
 - 覆盖队列等待、上下文、能力解析、Skill、每轮决策与实际模型请求、RAG 子阶段、工具执行、回答持久化及 Run 总耗时；嵌套阶段不能直接相加。
-- Profiling 写入失败不应中断业务。服务端完成时间与前端约 800ms 轮询产生的观察延迟分开统计，本轮未改为流式推送。
+- Profiling 写入失败不应中断业务。服务端完成时间与前端约 800ms 轮询产生的观察延迟属于不同指标；当前使用轮询获取结果。
 
 ## 系统架构
 
@@ -290,7 +276,7 @@ Compose 会启动：
 
 前端 Nginx 通过 Docker DNS 动态解析 Backend（约 5 秒刷新），后端容器重建并更换 IP 后不需要重启前端来更新代理地址。验收时应同时检查 `http://localhost:5175/api/auth/registration`，仅首页返回 200 不能证明 API 代理可用。
 
-默认保留一个 Agent 消费者。多个 Worker 会允许不同 Run 同时操作同一环境，本轮尚未增加跨 Run 的变更串行化，不应仅为减少排队而直接扩大变更执行并发。升级已有实例时先等待执行中的操作结束，备份数据库，再运行上述构建启动命令；无需删除数据卷。
+默认保留一个 Agent 消费者。多个 Worker 会允许不同 Run 同时操作同一环境，当前没有跨 Run 的变更串行化，不应仅为减少排队而直接扩大变更执行并发。升级已有实例时先等待执行中的操作结束，备份数据库，再运行上述构建启动命令；无需删除数据卷。
 
 ## 用户、注册与登录会话
 
@@ -645,8 +631,6 @@ docker-compose.yml         本地一键部署
 - [AgentRun Profiling](docs/implementation/06-agentrun-profiling.md)
 - [Redis、RabbitMQ 与 Knowledge Path 升级](docs/implementation/07-redis-rabbitmq-knowledge-path.md)
 - [测试验收清单](docs/review/TEST_ACCEPTANCE_CHECKLIST.md)
-- [本轮性能与故障实验报告](test-results/13-v2-latency.md)
-- [原架构测试报告](test-results/10-final-report.md)
 
 ## License
 

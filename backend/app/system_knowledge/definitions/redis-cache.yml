@@ -1,0 +1,69 @@
+- id: redis_cache_scope
+  title: Redis 缓存了什么，是否保存答案和审批
+  summary: Redis 只缓存查询 Embedding 与重排计算，不保存最终答案、授权或实时服务状态。
+  tags: [Redis, 缓存范围, 查询向量, embedding缓存, rerank缓存, 最终答案]
+  content: |
+    ## 两类计算缓存
+    查询 Embedding 将相同配置下的问题复用为向量，减少重复远程向量化。共享 rerank 缓存保存与查询、模型、项目环境和候选版本匹配的排序结果；本地缓存仍可作为回退。系统内置 YAML 知识采用本地词法检索，不因启用 Redis 自动变成向量检索。
+
+    ## 不缓存的事实
+    Redis 不承担 Run 权威状态、用户权限、审批、Action Hash、Runtime Evidence 或最终答案存储。不能用缓存中的历史资料宣称服务此刻正常。数据库与运行时工具仍分别承担持久化与现场观测。
+
+    ## 隔离与时效
+    缓存 key 使用摘要，不直接暴露查询明文；但缓存值仍应按应用数据保护。重排键绑定项目、环境、模型和候选内容版本，查询向量键绑定相应模型配置及查询。命中不等于跳过检索权限过滤，也不允许跨项目返回文档。
+
+- id: redis_cache_miss_and_expiry
+  title: Redis 缓存为什么不命中，文档更新后何时失效
+  summary: 先区分未走缓存分支、配置或内容变化、过期与逐出，不把每次未命中当故障。
+  tags: [Redis, 缓存未命中, cache_hit, TTL, 过期, 文档更新, 模型切换]
+  content: |
+    ## 正常未命中
+    首次问题、查询文字变化、Embedding 模型配置变化都可能重新计算。重排还受项目、环境、候选及内容 Hash 影响；资料更新后不能复用旧候选的排序。候选来源少时可能直接跳过 rerank，这既不是缓存命中，也不是调用失败。
+
+    ## 过期和内存
+    EMBEDDING_CACHE_TTL_SECONDS 控制查询向量 TTL，重排有对应缓存 TTL 设置。当前 Compose Redis 使用 128 MB、allkeys-lru，内存压力下键可能先于 TTL 被逐出。没有 AOF/RDB 持久化，重启后重新计算是预期行为。
+
+    ## 如何确认
+    对有权限访问的同一个 Run 查看 Profiling 的 embedding 与 rerank 元数据，区分模型请求、cache hit 和 skipped 状态；再用相同项目、环境、模型与查询进行只读复测。全局 Redis 命中率不代表某条对话命中。
+    当前没有分布式请求合并，同时出现多个相同未命中请求仍可能重复调用供应商。不能把共享缓存理解为所有重复请求只计算一次。
+
+- id: redis_unavailable_fallback
+  title: Redis 连不上或超时，对话还能继续吗
+  summary: 缓存失败应回退正常计算，可能增加模型耗时；新容器启动还受 Compose 依赖约束。
+  tags: [Redis故障, Redis超时, 缓存降级, DNS, REDIS_URL, 连接失败]
+  content: |
+    ## 运行时降级
+    已运行的应用在缓存读取、写入或数据校验失败时，使用正常计算或本地重排缓存。缓存 I/O 等待约束包含 DNS，单次上限约 200ms；这不是整条 RAG 的耗时上限，也不限制远程 Embedding 或模型生成时间。
+
+    ## 检查顺序
+    在 Ops 部署目录执行：
+    ```sh
+    docker compose ps redis
+    docker compose exec -T redis redis-cli ping
+    docker compose logs --tail=100 redis worker
+    ```
+    PONG 只证明 Redis 进程可响应，应用仍可能使用错误地址或网络。检查应用的 REDIS_URL 配置与服务名；不要输出包含凭据的完整连接串。
+
+    ## 启动与运行不是一回事
+    Compose Worker 默认依赖 Redis 健康，因此 Redis 故障时新建 Worker 可能尚未启动；这与已运行进程的缓存降级不同。确认进程已启动再分析调用回退。恢复后用只读知识查询验证业务，不通过生产变更测试缓存。
+
+- id: redis_cache_maintenance
+  title: Redis 缓存怎么清理、禁用和检查容量
+  summary: 优先等待 TTL 或按已确认范围维护，避免清空共享实例；禁用要区分 Settings 与 Compose 默认值。
+  tags: [Redis, 缓存怎么清理, 清缓存, 禁用缓存, 容量, REDIS_URL, flushall]
+  content: |
+    ## 先确认是否需要清理
+    文档或模型更新通常通过缓存键版本自然失效，无需清空全部数据。先看实际命中、TTL 和错误，错误答案也可能来自资料内容或模型推断，不能一概归因于缓存。
+
+    ## 只读检查
+    在 Ops 部署目录执行：
+    ```sh
+    docker compose exec -T redis redis-cli INFO memory
+    docker compose exec -T redis redis-cli INFO stats
+    docker compose exec -T redis redis-cli DBSIZE
+    ```
+    这些是实例级信息。确需删除时，由维护者先核对 REDIS_URL 的实例与逻辑数据库，再用有界 SCAN 确认应用 ops:v1: 前缀及键范围。不要在共享 Redis 上执行 FLUSHALL 或把 KEYS * 当作大库常规排查命令。
+
+    ## 禁用方法
+    直接启动应用时空 REDIS_URL 可关闭共享缓存。当前 Compose 使用 ${REDIS_URL:-redis://redis:6379/0}，因此只在 .env 留空仍会回到默认 Redis；需要显式 Compose override 把应用服务的 REDIS_URL 设为空，并重新创建相应容器。若要停用 Redis 服务，还需处理 Worker 的启动依赖。
+    禁用后会增加重复计算，不会删除数据库文档，也不会取消已批准操作。使用相同只读问题核对功能与耗时。

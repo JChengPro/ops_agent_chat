@@ -1,0 +1,63 @@
+- id: profiling_query_run
+  title: 怎么按 run_id 查询 AgentRun Profiling 耗时
+  summary: profile 接口返回时间线、Top 阶段与汇总，要求当前账号有该 Run 的访问权限。
+  tags: [Profiling, profile, run_id, AgentRun耗时, 耗时查询, 性能分析, 时间线]
+  content: |
+    ## 找到任务
+    每次对话有独立 AgentRun，先从创建请求响应或该会话的 Run API 找到 run_id。不要把 chat session id、message id 当作 run_id。记录问题、项目环境、使用模型、是否首次查询和最终状态，便于比较。
+
+    ## 查询接口
+    已登录客户端请求 GET /api/agent-runs/{run_id}/profile。部署维护者也可使用本人有效访问令牌发起请求，不能把令牌写入知识文档或公开日志。无权访问他人的任务时，应按权限处理而不是绕过接口直接导出数据。
+    响应中的 timeline 按时间列出阶段，top_stages 列出较慢阶段，stage_summary 汇总同名阶段。各条记录包含阶段名、开始和结束时间、latency_ms、status 及已有元数据。
+
+    ## 判读
+    先看 Run 总耗时和状态，再看排队、模型、检索和持久化。每轮模型请求可能包含 model 和 token usage；供应商未返回 usage 时缺失不代表消耗为零。运行未结束时结果可能不完整，完成后再查询。
+
+    ## 记录边界
+    Profile 与 AgentStep、安全 Audit 分开存储，记录失败不应改变业务结果。Worker 强制退出或存储失败可能留下缺口；没有某阶段记录不能直接证明该阶段没发生。
+
+- id: profiling_model_latency
+  title: 回复很慢，LLM 占大部分耗时应该怎么分析
+  summary: 分清调用轮数、输入输出规模与实际请求延迟，再决定是否调整模型或上下文。
+  tags: [LLM慢, 回复慢, 一分钟, 模型耗时, token, decision, skill.selection]
+  content: |
+    ## 先看实测组成
+    比较 skill.selection、各轮 llm.decision 及实际 LLM request。父阶段通常包含模型请求，两者不能重复相加。模型时间高时进一步看输入 tokens、输出 tokens、调用用途和失败重试；非流式调用只在完整响应后返回，不能从总时间推断首 token 延迟。
+
+    ## 知识查询与诊断不同
+    明确项目文档或历史经验问题可走 Knowledge Path，固定经验检索后生成一次答案。实时检查、多步诊断、条件修复与变更仍使用完整流程。系统没有完整四路径 Router，不能声称所有只读问题都只调用一次模型。
+
+    ## 决策方法
+    多轮重复决策考虑路径与上下文；单轮输出很长考虑回答目标和输出规模；供应商延迟高再用固定问题对比模型。模型替换还需验证 Schema、工具参数、引用和错误处理质量，不能仅比较一次最快请求。
+    Redis 主要减少重复向量化和排序，RabbitMQ 主要处理投递；两者不会直接缩短每一次远程模型生成。不要通过跳过审批或最终验证降低表面耗时。
+
+- id: profiling_rag_latency
+  title: RAG 检索慢，如何区分 Embedding、数据库和 Rerank
+  summary: 检索父阶段包含多个子阶段，应结合候选数量、实际调用与缓存状态定位。
+  tags: [RAG慢, embedding耗时, lexical, vector, RRF, rerank耗时, candidate_count]
+  content: |
+    ## 查看阶段
+    在 Run profile 中查看 rag.search 及 embedding、lexical retrieval、vector retrieval、RRF、rerank、result assembly 等记录，以返回的实际阶段名为准。缓存命中可能跳过远程模型请求；没有向量配置可能仅执行词法召回。
+
+    ## 解释结果
+    Embedding 慢检查远程接口与缓存；词法/向量数据库查询慢，再检查语料规模、过滤条件和查询计划；RRF 通常只做候选排名融合，不能把 rerank 的模型等待归到 RRF。rerank 是否调用取决于启用状态及唯一来源竞争，不是每次都有远程精排。
+
+    ## 对照条件
+    固定查询、项目、环境、资料版本、模型和结果上限，分别记录首次查询与缓存命中。candidate_count 和 result_count 说明候选与输出规模，不代表正确率。性能调整后仍需核对必需证据是否被召回，不能仅以更少结果换取表面速度。
+
+- id: profiling_total_and_polling
+  title: 服务端完成时间与页面等待时间为什么不同
+  summary: run.total、排队、审批等待与浏览器轮询有不同计时边界，阶段耗时不可直接累加。
+  tags: [总耗时, run.total, queue.wait, 800ms, polling, 轮询, 用户感知延迟]
+  content: |
+    ## 两个时间指标
+    用户从点击发送到看到回答，还经历网络传输、API 接受、浏览器轮询与渲染。当前前端约 800ms 轮询，并非 SSE 或 WebSocket 实时推送；一次完成后的额外观察等待不固定为 800ms，还受请求耗时和浏览器调度影响。
+
+    ## 避免重复统计
+    run.total 是整段任务墙钟区间，子阶段存在嵌套和重叠。例如 rag.search 包含 embedding/rerank，decision 包含 LLM request。Top 阶段用于定位，不能把所有 latency_ms 相加当成总耗时，也不代表已计算独占 CPU 时间。
+
+    ## 长任务与审批
+    waiting_for_approval 的人工等待可能主导从创建到完成的时间，应与实际执行阶段分开解释。queue.wait 反映等待领取，不能拿它解释已在 running 中的模型超时。跨进程时间依赖主机时钟，时钟跳变或缺失记录需结合报告说明核对。
+
+    ## 复测
+    对多个代表性问题记录完整服务端数据，浏览器端另记发送与最终显示时间。小样本中位数不等于生产 P95，更不能把某个问题的加速比例当所有对话的承诺。
