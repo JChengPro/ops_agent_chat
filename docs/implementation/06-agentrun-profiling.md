@@ -28,8 +28,9 @@ and `stage_summary` with counts and accumulated time per stage. Each record has
 | `queue.wait` | Enqueue transaction's after-commit timestamp to successful claim commit |
 | `context.initialize` | Session/history loading and construction of initial graph state |
 | `capabilities.resolve` | Full capability resolution node |
-| `skill.selection` | Full skill selection node, including selector LLM when used |
-| `llm.decision` | One decision node; `produced_answer` identifies answer-producing rounds |
+| `request.planning` | Full structured request planning node, including its planner LLM call |
+| `llm.decision` | One dispatch or conditional-decision node; simple planned calls may be deterministic |
+| `llm.final_answer` | Final evidence-grounded answer generation node |
 | `llm.request` | Actual SDK completion call, with purpose, model, input/output tokens |
 | `tool.execute` | One RuntimeExecutor.execute call, including evidence recording |
 | `rag.search` | Experience retrieval through final result assembly |

@@ -19,13 +19,13 @@
 - id: profiling_model_latency
   title: 回复很慢，LLM 占大部分耗时应该怎么分析
   summary: 分清调用轮数、输入输出规模与实际请求延迟，再决定是否调整模型或上下文。
-  tags: [LLM慢, 回复慢, 一分钟, 模型耗时, token, decision, skill.selection]
+  tags: [LLM慢, 回复慢, 一分钟, 模型耗时, token, decision, request.planning, final_answer]
   content: |
     ## 先看实测组成
-    比较 skill.selection、各轮 llm.decision 及实际 LLM request。父阶段通常包含模型请求，两者不能重复相加。模型时间高时进一步看输入 tokens、输出 tokens、调用用途和失败重试；非流式调用只在完整响应后返回，不能从总时间推断首 token 延迟。
+    比较 request.planning、必要的 llm.decision、llm.final_answer 及实际 LLM request。父阶段通常包含模型请求，两者不能重复相加。模型时间高时进一步看输入 tokens、输出 tokens、调用用途和失败重试；非流式调用只在完整响应后返回，不能从总时间推断首 token 延迟。
 
     ## 知识查询与诊断不同
-    明确项目文档或历史经验问题可走 Knowledge Path，固定经验检索后生成一次答案。实时检查、多步诊断、条件修复与变更仍使用完整流程。系统没有完整四路径 Router，不能声称所有只读问题都只调用一次模型。
+    普通请求先由 Request Planner 区分 knowledge、runtime_read、change 和 general，可在一条消息中保留多个目标。知识查询通常是规划、检索、回答；实时只读通常是规划、工具、最终回答；无条件变更通常是规划、审批执行、最终回答；条件变更还需一次基于实时证据的判断。精确系统手册命中可能跳过规划调用。
 
     ## 决策方法
     多轮重复决策考虑路径与上下文；单轮输出很长考虑回答目标和输出规模；供应商延迟高再用固定问题对比模型。模型替换还需验证 Schema、工具参数、引用和错误处理质量，不能仅比较一次最快请求。

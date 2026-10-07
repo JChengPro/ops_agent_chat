@@ -34,9 +34,9 @@ flowchart TD
     Worker --> Agent[LangGraph Agent]
     Agent --> Handbook[系统手册说明]
     Agent --> Knowledge[项目知识查询]
-    Agent --> Loop[Skill / Decision 多轮规划]
+    Agent --> Planner[Request Planner 多目标规划]
     Knowledge --> Governance[Capability / Policy / Action]
-    Loop --> Governance
+    Planner --> Governance
     Governance --> Approval[必要时人工审批]
     Approval --> Executor[Runtime Executor]
     Executor --> RAG[Experience Search]
@@ -70,10 +70,10 @@ flowchart TD
 | 无项目通用问答 | 检索相关系统知识后使用紧凑回答 Schema |
 | 明确的系统手册说明 | 完整匹配标题或登记别名，读取对应小节并生成一次回答，不访问运行时 |
 | 明确的项目文档与历史经验查询 | 固定 `experience.search` 经治理执行后，生成有来源的回答 |
-| 实时状态与复杂诊断 | Skill 收窄能力，模型按需选择只读工具，结合证据继续判断 |
-| 变更请求 | 生成 Action，经过策略、必要审批、预检查、执行和独立验证 |
+| 实时状态与复杂诊断 | Planner 保留全部目标和约束，服务端映射只读 Skill 与能力，最终基于实时证据回答 |
+| 变更请求 | Planner 登记变更目标，生成 Action，经过策略、必要审批、预检查、执行和独立验证 |
 
-路由只选择流程，不授予权限。Skill 只能收窄已授权能力。实时、复合或含糊请求保留完整 Agent 流程；系统尚未提供通用并行工具调度。
+Planner 不授予权限，也不能创造工具。Skill 由服务端按目标类型确定性映射，只能收窄 Registry 已授权能力。复合请求可以同时包含知识、实时检查与条件变更；系统尚未提供通用并行工具调度。
 
 一次请求创建独立 `AgentRun`，API 返回 `202 Accepted`，前端轮询结果。Run 经历排队、执行、可选的等待审批以及完成、失败或取消。LangGraph checkpoint 支持审批暂停与恢复，数据库租约和原子状态转换控制任务领取。
 

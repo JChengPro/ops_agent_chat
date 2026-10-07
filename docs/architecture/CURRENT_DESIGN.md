@@ -30,11 +30,11 @@ Ops Agent Chat 面向个人开发者和小团队，通过对话完成项目知�
 | --- | --- | --- |
 | 无项目通用聊天 | 紧凑回答 Schema，可检索系统内置知识 | 常识与产品使用说明，不声称检查实际服务 |
 | 明确的项目历史经验、文档查询 | Knowledge Path，一次固定检索后生成答案 | 本次检索到的 verified 项目文档与经验 |
-| 实时状态、复杂只读诊断 | 原 Skill / Decision / Tool Loop | 实时工具证据，必要时结合 Context 和经验 |
-| 重启、启停、扩缩容、登记变更 | 原 Agent Loop 与完整治理链 | 审批、执行、验证及恢复证据 |
+| 实时状态、复杂只读诊断 | Request Planner + 确定性 Skill 映射 + Tool | 实时工具证据，必要时结合 Context 和经验 |
+| 重启、启停、扩缩容、登记变更 | Request Planner + 完整治理链 | 审批、执行、验证及恢复证据 |
 | 主动巡检 | 确定性检查，异常可入队只读诊断 Run | 环境最新观察与事件记录 |
 
-本轮没有完整实现四套独立的 Fast / Read / Diagnosis / Safe 图，也没有将全部工具调用并行化。Knowledge Path 是现有 LangGraph 节点内的一条收窄路径；其余请求沿用原图。
+系统没有拆成四套独立的 Fast / Read / Diagnosis / Safe 图，也没有将全部工具调用并行化。单个 LangGraph 先生成多目标 Request Plan，再由服务端确定性映射处理路径和 Skill；精确系统手册仍保留受限快速路径。
 
 <a id="s2"></a>
 
@@ -50,9 +50,9 @@ flowchart TD
     MQ --> Worker[Agent Worker]
     Worker --> Claim[PostgreSQL 原子领取与租约]
     Claim --> Graph[LangGraph]
-    Graph --> Route{知识路径是否命中}
-    Route -->|是| Knowledge[固定只读检索决策]
-    Route -->|否| Loop[Skill / LLM Decision]
+    Graph --> Planner[Request Planner]
+    Planner --> Knowledge[知识检索]
+    Planner --> Loop[确定性 Skill 映射 / 条件 Decision]
     Knowledge --> Governance[Capability / Policy / Action / Approval]
     Loop --> Governance
     Governance --> Executor[Runtime Executor]
@@ -125,15 +125,15 @@ sequenceDiagram
 
 API 创建事务成功并不意味着 Broker 已收到消息，也不意味着 Worker 已开始执行。Outbox 让提交成功后的任务在 Broker 恢复后仍可继续投递。任务结果提交与消息 ACK 不是分布式事务，重复通知通过数据库领取条件处理。
 
-#### 3.2 知识路径
+#### 3.2 请求规划与知识路径
 
-`create_run → enqueue_run → publish_next → process_message → claim_run → process_claimed_run → execute_run → resolve_capabilities → select_skill 中的 knowledge_route → decide 生成 experience.search → prepare_actions → execute → decide 调用 answer_knowledge → finish → _persist_result`。
+`create_run → enqueue_run → publish_next → process_message → claim_run → process_claimed_run → execute_run → resolve_capabilities → plan_request → decide 生成 experience.search → prepare_actions → execute → decide 调用 answer_knowledge → finish → _persist_result`。
 
-路由命中时不调用 Skill Selection LLM，也不让模型决定是否搜索。检索依然经过原 Action / Policy / Executor；返回的片段压缩后交给一次专用回答模型。默认检索上限为 5 个片段。
+`plan_request` 用一次结构化模型调用提取一条消息中的全部目标、约束、否定、条件和依赖。知识目标由服务端确定性映射到 `experience.search`，不再额外调用模型选择 Skill。检索依然经过原 Action / Policy / Executor；返回的片段压缩后交给一次专用回答模型。默认检索上限为 5 个片段。精确命中的系统手册仍可走确定性快速路径，但普通知识路由不再以关键词白名单作为主判据。
 
-#### 3.3 原调查与变更路径
+#### 3.3 实时调查与变更路径
 
-`resolve_capabilities → select_skill → decide → prepare_actions → [await_approval] → execute → decide` 可以循环多轮；模型选择回答或澄清时进入 `finish`。执行前后仍有取消、定义绑定、配置修订、审批、预检、验证和所有权检查。
+`resolve_capabilities → plan_request → decide → prepare_actions → [await_approval] → execute → final_answer`。Planner 只推荐 Registry 中可用的能力；服务端按目标类型确定性选择 Skill 并收窄能力。直接只读和无条件变更通常不再需要中间决策模型；条件变更先执行 Planner 登记的只读调用，再允许一次基于实时证据的条件判断。执行前后仍有取消、定义绑定、配置修订、审批、预检、验证和所有权检查。
 
 只读请求无需人工审批，但仍经过权限与执行参数校验。变更不是由模型写一段命令直接执行，而是由已注册能力及冻结的配置决定可执行操作。
 
@@ -144,7 +144,7 @@ API 创建事务成功并不意味着 Broker 已收到消息，也不意味着 W
 | 约束 | 当前落实位置 | 含义 |
 | --- | --- | --- |
 | 模型输出不等于授权 | Registry、Policy、Executor | 模型不能提升权限或定义新工具 |
-| 路由只能收窄路径 | `agent/routing.py`、`graph.py` | Knowledge Path 只有经验检索能力 |
+| 规划不能扩大权限 | `llm/gateway.py`、`graph.py`、Registry | Planner 只能引用本次提供的能力，服务端按目标类型继续收窄 |
 | 消息不是执行权 | `dispatch.py`、`claim_run` | 重复通知必须重新检查数据库状态和版本 |
 | 审批绑定具体动作 | Action snapshot/hash、Approval | 批准不能替换目标、参数或配置 |
 | 取消和未知结果不能被晚到结果覆盖 | Run/Action 条件更新、执行 token、租约恢复 | 不把不确定副作用自动重放 |
@@ -173,8 +173,8 @@ API 创建事务成功并不意味着 Broker 已收到消息，也不意味着 W
 ```mermaid
 flowchart LR
     START --> Resolve[resolve_capabilities]
-    Resolve --> Skill[select_skill]
-    Skill --> Decide[decide]
+    Resolve --> Plan[plan_request]
+    Plan --> Decide[decide]
     Decide -->|需要工具| Prepare[prepare_actions]
     Decide -->|回答或澄清| Finish[finish]
     Prepare -->|需审批| Approval[await_approval]
@@ -183,12 +183,13 @@ flowchart LR
     Prepare -->|结束| Finish
     Approval -->|可执行| Execute
     Approval -->|结束| Finish
-    Execute -->|继续| Decide
-    Execute -->|结束| Finish
+    Execute -->|条件目标待判断| Decide
+    Execute -->|证据已完备| Final[final_answer]
+    Final --> Finish
     Finish --> END
 ```
 
-`resolve_capabilities` 依据当前项目成员资格、环境运行时和只读标志获取允许的能力。`select_skill` 先检查知识路径，否则选择兼容 Skill 并将工具收窄到交集。`decide` 执行模型或确定性知识决策；后续节点仍共享执行治理逻辑。
+`resolve_capabilities` 依据当前项目成员资格、环境运行时和只读标志获取允许的能力。`plan_request` 生成多目标结构化计划；服务端将 `knowledge`、`runtime_read`、`change`、`general` 映射到固定处理路径与 Skill，并将工具收窄到交集。`decide` 负责分派 Planner 已登记的调用，以及条件变更所需的证据判断。`final_answer` 只能根据请求计划、Evidence、Action 和 Verifier 结果作答；后续节点继续共享原执行治理逻辑。
 
 #### 5.3 Run 状态与恢复
 
@@ -263,9 +264,9 @@ Collector 仍从 PostgreSQL 领取，由 Maintenance 执行，并未迁移到 Ra
 
 <a id="s7"></a>
 
-### 7. LLM Gateway、Skill 与 Knowledge Router
+### 7. LLM Gateway、Request Planner 与 Skill
 
-代码入口：[Gateway](../../backend/app/llm/gateway.py)、[模型配置](../../backend/app/llm/configuration.py)、[响应 Schema](../../backend/app/llm/schemas.py)、[Skill Registry](../../backend/app/skills/registry.py)、[Knowledge Router](../../backend/app/agent/routing.py)。
+代码入口：[Gateway](../../backend/app/llm/gateway.py)、[模型配置](../../backend/app/llm/configuration.py)、[响应 Schema](../../backend/app/llm/schemas.py)、[Skill Registry](../../backend/app/skills/registry.py)、[保守回退路由](../../backend/app/agent/routing.py)。
 
 #### 7.1 模型配置与调用类型
 
@@ -273,8 +274,9 @@ Collector 仍从 PostgreSQL 领取，由 Maintenance 执行，并未迁移到 Ra
 
 | 调用 | 输入重点 | 输出与用途 |
 | --- | --- | --- |
-| `select_skill` | 问题、紧凑环境、候选 Skill 描述 | 最多选择一个 Skill，也可不选择 |
-| `decide` | 问题、历史、上下文、允许能力、已得证据 | respond / clarify / invoke_tools / propose_change |
+| `plan_request` | 问题、历史、紧凑环境、允许能力 | 全部目标、约束、依赖、条件和建议能力调用 |
+| `decide` | 请求计划、允许能力、已得证据 | 分派计划调用；条件变更时判断条件并选择已登记的后续调用 |
+| `final_answer` | 请求计划、运行时证据、知识来源、Action 与验证结果 | answer + 原子 Claim 及其 Evidence ID |
 | `answer_general` | 通用问题、历史、系统知识片段 | 简短答案与实际采用的系统知识 ID |
 | `answer_knowledge` | 当前问题、压缩后的检索来源 | answer + 最多 5 个 ClaimDraft；提示默认不超过 3 条原子 Claim |
 | Rerank | 查询与候选片段 | 结构化相关性评分与排序 |
@@ -289,17 +291,17 @@ ModelCall 记录目的、供应商、模型、prompt version、输入输出 Toke
 
 Skill 是版本化 SOP，来自 `skills/definitions/*/SKILL.md`，包含运行时范围、必需能力、允许能力和流程文本。Registry 启动时校验引用与定义完整性，并计算定义 Hash。
 
-当前有 `runtime-diagnosis` 和 `controlled-service-change`。Skill 必须满足运行时与已有能力集合要求；选择后只做允许能力交集，不增加权限。监控诊断可以确定性使用只读诊断 Skill，知识路径跳过 Skill 模型。
+当前有 `runtime-diagnosis` 和 `controlled-service-change`。Skill 必须满足运行时与已有能力集合要求；服务端根据 Planner 的 `runtime_read` 和 `change` 目标确定性选择 Skill，并只做允许能力交集，不增加权限。监控诊断确定性使用只读诊断 Skill，知识路径不需要 Skill Selection 模型。
 
-#### 7.3 保守知识路由
+#### 7.3 请求规划与保守快速路径
 
 在项目历史检索之前，完整匹配系统手册标题或登记的旧标题别名、且仅附带“该怎么办”等有限说明后缀的问题可进入 `system_handbook`。该路径仅限 interactive 模式，受 `KNOWLEDGE_FAST_PATH_ENABLED` 控制；不选择 Skill，不提供工具，只将命中的公开系统条目交给一次紧凑回答。不会携带项目对话历史或把业务项目的同名 worker 当作 Ops 进程。引用沿用原条目校验和回答持久化，取消/终态检查保留。额外实时或操作指令、含糊指代及自动监控诊断不进入此路径。它是保守的手册识别，不是完整意图分类器。
 
-路由仅在 interactive 模式、有 `experience.search` 能力且问题长度受限时考虑命中。规则寻找历史、经验、知识库、文档等明确标记，并排除已知实时、变更、诊断或歧义表达。显式否定分句单独处理，混合“不要删除，但要重启”仍进入原流程。
+除精确系统手册外，普通请求由 Planner 输出 `goals`、`constraints`、`depends_on`、`condition` 和 `recommended_calls`。服务端校验能力名称、目标归属和 change 绑定，再映射 `knowledge → experience.search`、`runtime_read → runtime-diagnosis`、`change → controlled-service-change`。Planner 失败时才使用保守规则回退；回退不是主路由，也不得扩大能力。
 
-命中后记录 `plan_json.request_path=knowledge`，将状态设为只读并仅暴露 `experience.search`。第一次 decide 构造固定查询，第二次 decide 调用 `answer_knowledge`。图的审批、执行和持久化节点没有被另建的旁路取代。
+知识目标记录 `plan_json.request_path=knowledge`，并仅暴露 `experience.search`。第一次 decide 构造固定查询，第二次 decide 调用 `answer_knowledge`。混合目标进入 agent 路径，独立调用先执行，带条件或依赖的变更延后到实时证据返回后判断。图的审批、执行和持久化节点没有被另建旁路取代。
 
-知识回答当前不发送整段聊天历史，主要依据当前问题和本次片段。规则不是完整自然语言理解，可能漏掉能加速的问题，也可能误解复杂复合句；能力白名单限制其副作用，但无法保证语义路由总是正确。模糊追问、需要多查询补证据的问题仍是后续评测重点。
+知识回答当前主要依据当前问题和本次片段。Planner 提升了复合意图、否定和条件的表达能力，但模型输出仍可能错误，因此 Schema、Capability Registry、Policy、Approval、Precheck 和 Verifier 都继续作为服务端边界。
 
 <a id="s8"></a>
 
@@ -571,8 +573,9 @@ Maintenance 复用原 Worker 的维护循环，但不领取普通 AgentRun。它
 | --- | --- |
 | `queue.wait` | 入队提交标记到成功领取标记，报告时配对计算 |
 | `context.initialize` | 组装初始 Run 状态与历史 |
-| `capabilities.resolve` / `skill.selection` | 能力解析与路径/Skill 选择 |
+| `capabilities.resolve` / `request.planning` | 能力解析与多目标请求规划 |
 | `llm.decision` | 一轮决策节点，可能是确定性知识决策 |
+| `llm.final_answer` | 基于已完成计划和证据生成最终回答 |
 | `llm.request` | 实际模型 SDK 调用，含其内部重试 |
 | `tool.execute` | 一个能力执行，包含检索等内部工作 |
 | `rag.search` | 整次项目经验检索 |

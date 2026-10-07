@@ -24,10 +24,21 @@ def knowledge_route(question: str, capabilities: list[dict], *, execution_mode: 
 
 
 def knowledge_request():
-    return {"goal": "answer", "scope": "project", "time_focus": "historical",
-            "requested_effect": "read", "subjects": [], "desired_output": "concise cited answer",
-            "constraints": ["knowledge sources only; no live runtime or changes"],
-            "confidence": 1.0, "summary": "Read verified project knowledge"}
+    return {
+        "goals": [{
+            "id": "g1",
+            "kind": "knowledge",
+            "description": "Read verified project knowledge",
+            "subjects": [],
+            "time_focus": "historical",
+            "depends_on": [],
+            "condition": None,
+        }],
+        "constraints": ["knowledge sources only; no live runtime or changes"],
+        "needs_clarification": False,
+        "clarification_question": None,
+        "summary": "Read verified project knowledge",
+    }
 
 
 def compact_evidence(evidence, max_chars):

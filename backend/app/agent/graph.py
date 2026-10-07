@@ -14,7 +14,8 @@ from app.audit.service import append_audit_event
 from app.capabilities.registry import registry
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.llm.gateway import LLMGateway, StructuredDecisionError
+from app.llm.gateway import LLMGateway, StructuredDecisionError, _fallback_request_plan
+from app.llm.schemas import RequestUnderstanding
 from app.models.action import Action, Approval, PolicyDecision
 from app.models.agent import AgentRun, AgentStep
 from app.models.monitoring import MonitorEvent
@@ -26,7 +27,7 @@ from app.runtime.verification import runtime_records, verification_satisfied, ve
 from app.skills.registry import skill_registry
 from app.system_knowledge.registry import system_knowledge_registry
 from app.profiling import decision_round, profiled
-from app.agent.routing import compact_evidence, knowledge_request, knowledge_route
+from app.agent.routing import compact_evidence, knowledge_request
 
 
 def approval_summaries(capability_name: str, target: dict[str, Any], rollback: dict[str, Any] | None) -> tuple[str, str]:
@@ -122,19 +123,27 @@ class OpsAgentGraph:
     def _build(self):
         graph = StateGraph(AgentState)
         graph.add_node("resolve_capabilities", self.resolve_capabilities)
-        graph.add_node("select_skill", self.select_skill)
+        graph.add_node("plan_request", self.plan_request)
         graph.add_node("decide", self.decide)
         graph.add_node("prepare_actions", self.prepare_actions)
         graph.add_node("await_approval", self.await_approval)
         graph.add_node("execute", self.execute)
+        graph.add_node("final_answer", self.final_answer)
         graph.add_node("finish", self.finish)
         graph.add_edge(START, "resolve_capabilities")
-        graph.add_edge("resolve_capabilities", "select_skill")
-        graph.add_edge("select_skill", "decide")
+        graph.add_edge("resolve_capabilities", "plan_request")
+        graph.add_edge("plan_request", "decide")
         graph.add_conditional_edges("decide", self.route_decision, {"prepare": "prepare_actions", "finish": "finish"})
-        graph.add_conditional_edges("prepare_actions", self.route_prepared, {"approval": "await_approval", "execute": "execute", "decide": "decide", "finish": "finish"})
+        graph.add_conditional_edges(
+            "prepare_actions",
+            self.route_prepared,
+            {"approval": "await_approval", "execute": "execute", "decide": "decide",
+             "final_answer": "final_answer", "finish": "finish"},
+        )
         graph.add_conditional_edges("await_approval", self.route_approval, {"execute": "execute", "finish": "finish"})
-        graph.add_conditional_edges("execute", self.route_after_execute, {"decide": "decide", "finish": "finish"})
+        graph.add_conditional_edges("execute", self.route_after_execute,
+                                    {"decide": "decide", "final_answer": "final_answer", "finish": "finish"})
+        graph.add_edge("final_answer", "finish")
         graph.add_edge("finish", END)
         return graph
 
@@ -173,95 +182,145 @@ class OpsAgentGraph:
             capabilities = [item.model_schema() for item in definitions]
             self._step(db, state, "resolve_capabilities", {"count": len(capabilities), "runtime": runtime_type})
             db.commit()
-        return {"context": context, "capabilities": capabilities, "evidence": [], "tool_call_count": 0, "step_count": 1, "status": "running"}
+        return {"context": context, "capabilities": capabilities, "evidence": [], "tool_call_count": 0,
+                "step_count": 1, "status": "running", "planned_calls_dispatched": False,
+                "deferred_calls": []}
 
-    @profiled("skill.selection")
-    def select_skill(self, state: AgentState) -> dict:
+    @profiled("request.planning")
+    def plan_request(self, state: AgentState) -> dict:
         capabilities = state.get("capabilities", [])
         handbook = system_knowledge_registry.match_handbook_question(state["question"])
         if (get_settings().knowledge_fast_path_enabled and handbook
                 and (state.get("execution_mode") or "interactive") == "interactive"):
+            plan = RequestUnderstanding.model_validate({
+                "goals": [{
+                    "id": "g1",
+                    "kind": "knowledge",
+                    "description": f"查询 Ops Agent 系统手册：{state['question']}",
+                    "subjects": [],
+                    "time_focus": "timeless",
+                    "depends_on": [],
+                    "condition": None,
+                }],
+                "constraints": ["只提供系统使用说明，不检查或改变项目运行状态"],
+                "summary": "查询 Ops Agent 系统手册",
+            })
             with SessionLocal() as db:
                 run = db.get(AgentRun, state["run_id"])
                 if run:
                     run.plan_json = {**(run.plan_json or {}), "request_path": "system_handbook",
-                                     "router_version": "handbook-1", "handbook_item_id": handbook.id}
-                self._step(db, state, "route_request", {"path": "system_handbook", "item_id": handbook.id})
+                                     "router_version": "planner-1", "handbook_item_id": handbook.id,
+                                     "request_plan": plan.model_dump(mode="json")}
+                    run.request_json = plan.model_dump(mode="json")
+                self._step(db, state, "plan_request", {"path": "system_handbook", "item_id": handbook.id, "goal_count": 1})
                 db.commit()
             return {"request_path": "system_handbook", "handbook_item_id": handbook.id,
-                    "read_only": True, "capabilities": [], "selected_skill": None,
+                    "request_plan": plan.model_dump(mode="json"),
+                    "read_only": True, "capabilities": [], "selected_skills": [],
                     "context": {**state.get("context", {}), "read_only": True},
                     "step_count": state.get("step_count", 0) + 1}
-        if get_settings().knowledge_fast_path_enabled and knowledge_route(
-            state["question"], capabilities, execution_mode=state.get("execution_mode") or "interactive",
-        ):
-            with SessionLocal() as db:
-                run = db.get(AgentRun, state["run_id"])
-                if run:
-                    run.plan_json = {**(run.plan_json or {}), "request_path": "knowledge", "router_version": "knowledge-1"}
-                self._step(db, state, "route_request", {"path": "knowledge", "reason": "explicit_knowledge_request"})
-                db.commit()
-            return {"request_path": "knowledge", "read_only": True,
-                    "context": {**state.get("context", {}), "read_only": True},
-                    "capabilities": [item for item in capabilities if item.get("name") == "experience.search"],
-                    "selected_skill": None, "step_count": state.get("step_count", 0) + 1}
+
         available = {str(item.get("name")) for item in capabilities}
         runtime_type = str(state.get("context", {}).get("runtime_type") or "")
         candidates = skill_registry.resolve(runtime_type, available)
-        selected = None
-        fallback_reason = "no matching skill"
+        fallback_reason = None
         with SessionLocal() as db:
             run = db.get(AgentRun, state["run_id"])
             try:
                 if state.get("execution_mode") == "monitor_diagnosis":
-                    selected = next((item for item in candidates if item.name == "runtime-diagnosis"), None)
-                    fallback_reason = "monitor diagnosis uses the read-only diagnosis skill"
-                elif candidates:
-                    selection = self.gateway.select_skill(
+                    plan = RequestUnderstanding.model_validate({
+                        "goals": [{"id": "g1", "kind": "runtime_read",
+                                   "description": "收集严重巡检事件的当前运行状态和日志",
+                                   "time_focus": "current"}],
+                        "constraints": ["自动只读诊断，不执行状态变更"],
+                        "summary": "自动收集严重巡检事件的实时状态和日志",
+                    })
+                else:
+                    plan = self.gateway.plan_request(
                         db,
                         run_id=state["run_id"],
                         question=state["question"],
+                        history=state.get("history", []),
                         context=state.get("context", {}),
-                        skills=[item.selector_schema() for item in candidates],
+                        capabilities=capabilities,
                         cancel_check=lambda: self._run_cancelled(state["run_id"]),
                     )
-                    selected = skill_registry.get(selection.name) if selection.name else None
-                    fallback_reason = selection.reason or fallback_reason
             except Exception as exc:  # noqa: BLE001
                 if run and (run.status == "cancelled" or run.cancel_requested_at):
                     raise
-                fallback_reason = f"skill selector unavailable: {type(exc).__name__}"
+                plan = _fallback_request_plan(state["question"], state.get("context", {}))
+                fallback_reason = f"request planner unavailable: {type(exc).__name__}"
 
             context = dict(state.get("context", {}))
-            if selected:
-                capabilities = skill_registry.narrow_capabilities(selected, capabilities)
-                context["skill"] = {
-                    **selected.trace(),
-                    "description": selected.description,
-                    "instructions": selected.instructions,
-                }
-                trace = selected.trace()
+            kinds = {goal.kind for goal in plan.goals}
+            legacy_test_provider = bool(
+                self.gateway.provider and not callable(getattr(self.gateway.provider, "plan_request", None))
+            )
+            if plan.needs_clarification:
+                request_path = "clarification"
+            elif kinds <= {"general"}:
+                request_path = "agent" if legacy_test_provider else "general"
+            elif kinds <= {"knowledge"}:
+                request_path = (
+                    "agent" if legacy_test_provider
+                    else "knowledge" if "experience.search" in available
+                    else "general"
+                )
             else:
-                context.pop("skill", None)
-                trace = None
+                request_path = "agent"
+
+            desired_skills: set[str] = set()
+            if "runtime_read" in kinds:
+                desired_skills.add("runtime-diagnosis")
+            if "change" in kinds:
+                desired_skills.add("controlled-service-change")
+            selected = [item for item in candidates if item.name in desired_skills]
+            allowed_names: set[str] = set()
+            for skill in selected:
+                allowed_names.update(skill.allowed_capabilities)
+            if "knowledge" in kinds:
+                allowed_names.add("experience.search")
+            if request_path in {"general", "clarification"}:
+                allowed_names.clear()
+            capabilities = [item for item in capabilities if str(item.get("name")) in allowed_names]
+            traces = [item.trace() for item in selected]
+            context["request_plan"] = plan.model_dump(mode="json")
+            context["legacy_test_provider"] = legacy_test_provider
+            context["skills"] = [{**item.trace(), "description": item.description,
+                                  "instructions": item.instructions} for item in selected]
+            context.pop("skill", None)
             if run:
-                run.plan_json = {**(run.plan_json or {}), "skill": trace}
+                controls = {
+                    key: run.request_json[key]
+                    for key in ("source", "execution_mode", "read_only", "monitor_event_id")
+                    if isinstance(run.request_json, dict) and key in run.request_json
+                }
+                serialized = plan.model_dump(mode="json")
+                run.request_json = {**serialized, **controls}
+                run.plan_json = {**(run.plan_json or {}), "request_path": request_path,
+                                 "router_version": "planner-1", "request_plan": serialized,
+                                 "skills": traces, "planner_fallback_reason": fallback_reason}
             self._step(
                 db,
                 state,
-                "select_skill",
+                "plan_request",
                 {
-                    "selected": selected.name if selected else None,
+                    "path": request_path,
+                    "goal_count": len(plan.goals),
+                    "goal_kinds": [goal.kind for goal in plan.goals],
+                    "selected_skills": [item.name for item in selected],
                     "candidate_count": len(candidates),
                     "capability_count": len(capabilities),
-                    "fallback_reason": fallback_reason if not selected else None,
+                    "fallback_reason": fallback_reason,
                 },
             )
             db.commit()
         return {
             "context": context,
             "capabilities": capabilities,
-            "selected_skill": trace,
+            "request_plan": plan.model_dump(mode="json"),
+            "request_path": request_path,
+            "selected_skills": traces,
             "step_count": state.get("step_count", 0) + 1,
         }
 
@@ -298,19 +357,24 @@ class OpsAgentGraph:
                 return {"decision": {}, "pending_calls": [], "answer": "本次处理已由其他恢复流程安全终止。", "status": "failed"}
         with SessionLocal() as db:
             run = db.get(AgentRun, state["run_id"])
+            if state.get("request_path") == "clarification":
+                plan = RequestUnderstanding.model_validate(state["request_plan"])
+                question = plan.clarification_question or "请补充要处理的具体目标和运行环境。"
+                self._step(db, state, "decision", {"decision": "clarify", "source": "request_plan"})
+                db.commit()
+                return {
+                    "decision": {"decision": "clarify", "request": plan.model_dump(mode="json"),
+                                 "tool_calls": [], "clarification_question": question},
+                    "pending_calls": [],
+                    "answer": question,
+                    "claims": [],
+                    "step_count": state.get("step_count", 0) + 1,
+                }
             bootstrap_calls = self._monitor_diagnostic_calls(db, state)
             if bootstrap_calls:
-                request = {
-                    "goal": "investigate",
-                    "scope": "runtime",
-                    "time_focus": "current",
-                    "requested_effect": "read",
-                    "subjects": [],
-                    "desired_output": "diagnosis",
-                    "constraints": ["automatic read-only diagnosis"],
-                    "confidence": 1.0,
-                    "summary": "自动收集严重巡检事件的实时状态和日志",
-                }
+                request = state.get("request_plan") or _fallback_request_plan(
+                    state["question"], state.get("context", {})
+                ).model_dump(mode="json")
                 controls = {
                     key: run.request_json[key]
                     for key in ("source", "execution_mode", "read_only", "monitor_event_id")
@@ -342,7 +406,7 @@ class OpsAgentGraph:
                 }
             try:
                 if state.get("request_path") == "knowledge":
-                    request = knowledge_request()
+                    request = state.get("request_plan") or knowledge_request()
                     if not state.get("knowledge_searched"):
                         calls = [{"capability": "experience.search", "arguments": {"query": state["question"], "limit": 5},
                                   "purpose": "Read verified project knowledge"}]
@@ -364,7 +428,8 @@ class OpsAgentGraph:
                             "claims": [item.model_dump(mode="json") for item in response.claims],
                             "step_count": state.get("step_count", 0) + 1}
                 handbook_mode = state.get("request_path") == "system_handbook"
-                if handbook_mode or (not state.get("context", {}).get("project_selected") and not self.gateway.provider):
+                general_mode = state.get("request_path") == "general"
+                if handbook_mode or general_mode or (not state.get("context", {}).get("project_selected") and not self.gateway.provider):
                     if handbook_mode:
                         item = system_knowledge_registry.get(state["handbook_item_id"])
                         matches = [item.public_dict()] if item else []
@@ -379,17 +444,9 @@ class OpsAgentGraph:
                         guidance_only=handbook_mode,
                         cancel_check=lambda: self._run_cancelled(state["run_id"]),
                     )
-                    request = {
-                        "goal": "answer",
-                        "scope": "general",
-                        "time_focus": "timeless",
-                        "requested_effect": "none",
-                        "subjects": [],
-                        "desired_output": "answer",
-                        "constraints": ["system handbook guidance only; no runtime observation"] if handbook_mode else ["no project environment selected"],
-                        "confidence": 0.7,
-                        "summary": "系统手册说明，不检查项目运行状态" if handbook_mode else "通用聊天直接回答",
-                    }
+                    request = state.get("request_plan") or _fallback_request_plan(
+                        state["question"], state.get("context", {})
+                    ).model_dump(mode="json")
                     run.request_json = request
                     run.plan_json = {
                         **(run.plan_json or {}),
@@ -416,6 +473,65 @@ class OpsAgentGraph:
                         "system_knowledge_ids": response.used_system_knowledge_ids,
                         "step_count": state.get("step_count", 0) + 1,
                     }
+                plan = RequestUnderstanding.model_validate(state.get("request_plan") or knowledge_request())
+                if not state.get("planned_calls_dispatched") and plan.recommended_calls:
+                    capability_effects = {str(item.get("name")): str(item.get("effect"))
+                                          for item in state.get("capabilities", [])}
+                    goals = {goal.id: goal for goal in plan.goals}
+                    immediate: list[dict[str, Any]] = []
+                    deferred: list[dict[str, Any]] = []
+                    for planned in plan.recommended_calls:
+                        if planned.capability not in capability_effects:
+                            raise StructuredDecisionError(f"请求规划引用了当前不可用能力: {planned.capability}")
+                        call = {"capability": planned.capability, "arguments": planned.arguments,
+                                "purpose": planned.purpose, "goal_id": planned.goal_id}
+                        goal = goals[planned.goal_id]
+                        if goal.depends_on or goal.condition:
+                            deferred.append(call)
+                        else:
+                            immediate.append(call)
+                    if not immediate and deferred:
+                        raise StructuredDecisionError("请求规划包含依赖目标，但没有先行证据调用")
+                    payload_calls = [{key: value for key, value in call.items() if key != "goal_id"}
+                                     for call in immediate]
+                    decision_kind = (
+                        "propose_change"
+                        if any(capability_effects.get(call["capability"]) == "change" for call in immediate)
+                        else "invoke_tools"
+                    )
+                    payload = {"decision": decision_kind, "request": plan.model_dump(mode="json"),
+                               "tool_calls": payload_calls, "claims": []}
+                    run.plan_json = {**(run.plan_json or {}), "tool_calls": payload_calls,
+                                     "deferred_calls": deferred, "source": "request_planner"}
+                    self._step(db, state, "decision", {
+                        "decision": decision_kind,
+                        "tool_calls": len(payload_calls),
+                        "deferred_calls": len(deferred),
+                        "source": "request_planner",
+                    })
+                    db.commit()
+                    return {
+                        "decision": payload,
+                        "pending_calls": payload_calls,
+                        "planned_calls_dispatched": True,
+                        "deferred_calls": deferred,
+                        "answer": "",
+                        "claims": [],
+                        "step_count": state.get("step_count", 0) + 1,
+                    }
+                legacy_test_provider = bool(
+                    self.gateway.provider and not callable(getattr(self.gateway.provider, "plan_request", None))
+                )
+                if not state.get("planned_calls_dispatched") and not plan.recommended_calls and not legacy_test_provider:
+                    answer = "当前请求计划没有生成可执行的能力调用，请补充具体目标后重试。"
+                    self._step(db, state, "decision", {"decision": "clarify", "source": "empty_request_plan"})
+                    db.commit()
+                    return {
+                        "decision": {"decision": "clarify", "request": plan.model_dump(mode="json"),
+                                     "tool_calls": [], "clarification_question": answer},
+                        "pending_calls": [], "answer": answer, "claims": [],
+                        "step_count": state.get("step_count", 0) + 1,
+                    }
                 decision = self.gateway.decide(
                     db,
                     run_id=state["run_id"],
@@ -427,6 +543,48 @@ class OpsAgentGraph:
                     cancel_check=lambda: self._run_cancelled(state["run_id"]),
                 )
                 payload = decision.model_dump(mode="json")
+                plan = RequestUnderstanding.model_validate(state.get("request_plan") or payload["request"])
+                has_change_goal = plan.has_kind("change")
+                capability_effects = {str(item.get("name")): str(item.get("effect"))
+                                      for item in state.get("capabilities", [])}
+                selected_change = any(capability_effects.get(call["capability"]) == "change"
+                                      for call in payload["tool_calls"])
+                conditional_change = any(
+                    goal.kind == "change" and (goal.depends_on or goal.condition)
+                    for goal in plan.goals
+                )
+                has_live_evidence = any(
+                    item.get("status") == "success"
+                    and item.get("capability") not in {"experience.search", "system.knowledge.search", "project.context.get"}
+                    for item in state.get("evidence", [])
+                )
+                if selected_change and not has_change_goal:
+                    raise StructuredDecisionError("模型尝试在没有 change goal 的请求中规划状态变更")
+                if selected_change and conditional_change and not has_live_evidence:
+                    read_calls = [call for call in payload["tool_calls"]
+                                  if capability_effects.get(call["capability"]) == "read"]
+                    if not read_calls:
+                        raise StructuredDecisionError("条件变更必须先通过实时只读证据验证条件")
+                    payload["tool_calls"] = read_calls
+                    payload["decision"] = "invoke_tools"
+                    selected_change = False
+                if selected_change and decision.decision != "propose_change":
+                    raise StructuredDecisionError("状态变更能力必须使用 propose_change")
+                if decision.decision == "propose_change" and not has_change_goal and not legacy_test_provider:
+                    raise StructuredDecisionError("propose_change 必须对应明确的 change goal")
+                deferred = state.get("deferred_calls", [])
+                if deferred and payload["tool_calls"]:
+                    allowed = {
+                        (str(call.get("capability")), json.dumps(call.get("arguments") or {}, ensure_ascii=False, sort_keys=True))
+                        for call in deferred
+                    }
+                    actual = {
+                        (str(call.get("capability")), json.dumps(call.get("arguments") or {}, ensure_ascii=False, sort_keys=True))
+                        for call in payload["tool_calls"]
+                    }
+                    if not actual.issubset(allowed):
+                        raise StructuredDecisionError("条件判断只能执行 Request Planner 已登记的后续调用")
+                payload["request"] = plan.model_dump(mode="json")
                 controls = {
                     key: run.request_json[key]
                     for key in ("source", "execution_mode", "read_only", "monitor_event_id")
@@ -442,6 +600,7 @@ class OpsAgentGraph:
                     "pending_calls": payload["tool_calls"],
                     "answer": answer or "",
                     "claims": payload.get("claims") or [],
+                    "deferred_calls": [] if payload["tool_calls"] else deferred,
                     "step_count": state.get("step_count", 0) + 1,
                 }
             except Exception as exc:  # noqa: BLE001
@@ -1007,6 +1166,44 @@ class OpsAgentGraph:
             result["answer"] = terminal_error[1]
         return result
 
+    @profiled("llm.final_answer")
+    def final_answer(self, state: AgentState) -> dict:
+        with SessionLocal() as db:
+            run = db.get(AgentRun, state["run_id"])
+            try:
+                response = self.gateway.answer_final(
+                    db,
+                    run_id=state["run_id"],
+                    question=state["question"],
+                    history=state.get("history", []),
+                    request_plan=state.get("request_plan") or {},
+                    evidence=state.get("evidence", []),
+                    cancel_check=lambda: self._run_cancelled(state["run_id"]),
+                )
+                self._step(db, state, "final_answer", {
+                    "evidence_count": len(state.get("evidence", [])),
+                    "claim_count": len(response.claims),
+                })
+                db.commit()
+                return {
+                    "answer": response.answer,
+                    "claims": [item.model_dump(mode="json") for item in response.claims],
+                    "step_count": state.get("step_count", 0) + 1,
+                }
+            except Exception as exc:  # noqa: BLE001
+                db.refresh(run)
+                if run.status == "cancelled" or run.cancel_requested_at:
+                    answer, status, code = "本次处理已取消。", "cancelled", "RUN_CANCELLED"
+                else:
+                    answer, status, code = "证据已经保留，但模型未能生成最终回答，请稍后重试。", "failed", "FINAL_ANSWER_FAILED"
+                    run.error_code = code
+                    run.error_message = str(exc)[:2000]
+                self._step(db, state, "final_answer", {"error": type(exc).__name__},
+                           status=status, error_code=code)
+                db.commit()
+                return {"answer": answer, "claims": [], "status": status,
+                        "step_count": state.get("step_count", 0) + 1}
+
     def finish(self, state: AgentState) -> dict:
         answer = state.get("answer") or "目前没有足够信息形成可靠回答，请补充目标或选择项目环境后重试。"
         with SessionLocal() as db:
@@ -1058,8 +1255,14 @@ class OpsAgentGraph:
             return "approval"
         if any(action for action in state.get("action_ids", [])):
             return "execute"
-        if state.get("evidence"):
+        if state.get("evidence") and (
+            state.get("request_path") == "knowledge"
+            or state.get("deferred_calls")
+            or state.get("context", {}).get("legacy_test_provider")
+        ):
             return "decide"
+        if state.get("evidence"):
+            return "final_answer"
         return "finish"
 
     @staticmethod
@@ -1079,7 +1282,14 @@ class OpsAgentGraph:
 
     @staticmethod
     def route_after_execute(state: AgentState) -> str:
-        return "finish" if state.get("status") in {"failed", "cancelled", "completed"} else "decide"
+        if state.get("status") in {"failed", "cancelled", "completed"}:
+            return "finish"
+        if state.get("request_path") == "knowledge" or state.get("deferred_calls"):
+            return "decide"
+        context = state.get("context", {})
+        if context.get("legacy_test_provider"):
+            return "decide"
+        return "final_answer"
 
     @staticmethod
     def _terminal_runtime_error(observation: dict) -> tuple[str, str] | None:

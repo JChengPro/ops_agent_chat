@@ -3,12 +3,12 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from sqlalchemy import select
 
 from app.agent.graph import OpsAgentGraph
-from app.agent.routing import compact_evidence, knowledge_route
+from app.agent.routing import compact_evidence, knowledge_request, knowledge_route
 from app.agent.service import claim_run, create_run, process_claimed_run
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.llm.gateway import LLMGateway, ModelCallCancelled
-from app.llm.schemas import KnowledgeResponse
+from app.llm.schemas import KnowledgeResponse, RequestUnderstanding
 from app.models.action import Action, PolicyDecision
 from app.models.agent import AgentRun, ModelCall
 from app.models.chat import ChatSession
@@ -68,7 +68,7 @@ def test_fast_path_uses_one_answer_call_and_keeps_governed_execution(monkeypatch
         return KnowledgeResponse(answer="No matching historical incident is established.", claims=[]), 100, 30
 
     monkeypatch.setattr(LLMGateway, "_invoke_knowledge", staticmethod(invoke))
-    monkeypatch.setattr(LLMGateway, "select_skill", lambda *a, **kw: pytest.fail("Unexpected skill model"))
+    monkeypatch.setattr(LLMGateway, "plan_request", lambda *a, **kw: RequestUnderstanding.model_validate(knowledge_request()))
     monkeypatch.setattr(LLMGateway, "decide", lambda *a, **kw: pytest.fail("Unexpected planning model"))
     user_id, session_id = setup_subject()
     with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:

@@ -14,7 +14,10 @@ class AgentState(TypedDict, total=False):
     monitor_event_id: str | None
     context: dict[str, Any]
     capabilities: list[dict[str, Any]]
-    selected_skill: dict[str, Any] | None
+    request_plan: dict[str, Any]
+    selected_skills: list[dict[str, Any]]
+    planned_calls_dispatched: bool
+    deferred_calls: list[dict[str, Any]]
     request_path: str
     knowledge_searched: bool
     handbook_item_id: str

@@ -328,7 +328,7 @@ function ActivityPanel({runs,monitorEvents,onUseRecommendation}:{runs:AgentRun[]
   </div>;
 }
 function StatusDot({status}:{status:string}){return <i className={`status-dot ${status}`}/>}function goalOf(run:AgentRun){return String(run.request_json?.summary||run.request_json?.goal||"Agent 请求")}
-function stepLabel(value:string){return ({resolve_capabilities:"解析可用能力",select_skill:"选择处理流程",decision:"模型决策",policy:"策略检查",execute:"工具执行",await_approval:"等待审批",finish:"生成结果"} as Record<string,string>)[value]||value;}
+function stepLabel(value:string){return ({resolve_capabilities:"解析可用能力",plan_request:"理解并规划请求",select_skill:"选择处理流程",decision:"模型决策",policy:"策略检查",execute:"工具执行",await_approval:"等待审批",final_answer:"基于证据生成回答",finish:"生成结果"} as Record<string,string>)[value]||value;}
 function runErrorLabel(value?:string){return ({DECISION_FAILED:"模型决策失败",DECISION_INVALID:"模型执行计划未通过安全校验",MODEL_CALL_FAILED:"模型服务调用失败",RUN_TIMEOUT:"处理超时",WORKER_LEASE_EXPIRED:"Worker 心跳超时"} as Record<string,string>)[value||""]||value||"未知错误";}
 function monitorStatusLabel(value:string){return ({open:"需要处理",remediating:"正在自动修复",remediated:"已自动修复",resolved:"已恢复",remediation_failed:"自动修复失败"} as Record<string,string>)[value]||value;}
 function monitorSeverityLabel(value:string){return ({critical:"严重",warning:"警告",info:"信息"} as Record<string,string>)[value]||value;}

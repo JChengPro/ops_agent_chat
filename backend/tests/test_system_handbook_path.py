@@ -6,7 +6,7 @@ from app.agent.graph import OpsAgentGraph
 from app.agent.service import claim_run, create_run, process_claimed_run
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.llm.gateway import LLMGateway, ModelCallCancelled
+from app.llm.gateway import LLMGateway, ModelCallCancelled, _fallback_request_plan
 from app.llm.schemas import GeneralChatResponse
 from app.models.action import Action
 from app.models.agent import AgentRun, ModelCall
@@ -49,7 +49,7 @@ def test_project_handbook_uses_one_model_no_runtime_and_cites_source(monkeypatch
                                    used_system_knowledge_ids=["monitoring_worker_unavailable", "invented"]), 150, 40
 
     monkeypatch.setattr(LLMGateway, "_invoke_general", staticmethod(invoke))
-    monkeypatch.setattr(LLMGateway, "select_skill", lambda *a, **kw: pytest.fail("Unexpected skill model"))
+    monkeypatch.setattr(LLMGateway, "plan_request", lambda *a, **kw: pytest.fail("Unexpected planner model"))
     monkeypatch.setattr(LLMGateway, "decide", lambda *a, **kw: pytest.fail("Unexpected decision model"))
     user_id, session_id = setup_subject()
     with PostgresSaver.from_conn_string(get_settings().checkpoint_database_url) as saver:
@@ -65,7 +65,7 @@ def test_project_handbook_uses_one_model_no_runtime_and_cites_source(monkeypatch
             run = db.get(AgentRun, run_id)
             assert run.plan_json["request_path"] == "system_handbook"
             assert run.plan_json["system_knowledge_ids"] == ["monitoring_worker_unavailable"]
-            assert run.request_json["requested_effect"] == "none"
+            assert run.request_json["goals"][0]["kind"] == "knowledge"
             assert db.scalar(select(Action).where(Action.run_id == run_id)) is None
             assert [m.purpose for m in db.scalars(select(ModelCall).where(ModelCall.run_id == run_id))] == ["general_response"]
 
@@ -75,11 +75,14 @@ def test_handbook_admission_respects_disable_and_monitor_mode(monkeypatch, enabl
     monkeypatch.setattr(get_settings(), "knowledge_fast_path_enabled", enabled)
     from langgraph.checkpoint.memory import InMemorySaver
     graph = OpsAgentGraph(checkpointer=InMemorySaver())
+    monkeypatch.setattr(graph.gateway, "plan_request", lambda *args, **kwargs: _fallback_request_plan(
+        "Worker 不可用导致巡检停止 该怎么办", {"project_selected": False}
+    ))
     user_id, session_id = setup_subject()
     with SessionLocal() as db:
         run_id = create_run(db, db.get(ChatSession, session_id), user_id, "测试手册路由开关")["run_summary"]["id"]
-    result = graph.select_skill({"question": "Worker 不可用导致巡检停止 该怎么办", "run_id": run_id,
-                                 "execution_mode": mode, "capabilities": [], "context": {}})
+    result = graph.plan_request({"question": "Worker 不可用导致巡检停止 该怎么办", "run_id": run_id,
+                                 "execution_mode": mode, "capabilities": [], "context": {}, "history": []})
     assert result.get("request_path") != "system_handbook"
 
 

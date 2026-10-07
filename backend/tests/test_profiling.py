@@ -132,7 +132,7 @@ def test_real_graph_two_rounds_profile_and_authorization(monkeypatch):
         assert result["run_summary"]["status"] == "completed"
         data = profile(run_id, db, user)
         stages = {item["stage"] for item in data["timeline"]}
-        assert {"run.total", "queue.wait", "context.initialize", "capabilities.resolve", "skill.selection",
+        assert {"run.total", "queue.wait", "context.initialize", "capabilities.resolve", "request.planning",
                 "llm.decision", "rag.search", "rag.lexical", "rag.embedding", "rag.vector", "rag.rrf",
                 "rag.rerank", "rag.result_assembly", "tool.execute", "answer.persist"} <= stages
         assert [item["round_index"] for item in data["timeline"] if item["stage"] == "llm.decision"] == [1, 2]

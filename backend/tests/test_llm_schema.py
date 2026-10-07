@@ -2,8 +2,8 @@ import pytest
 import json
 from pydantic import ValidationError
 
-from app.llm.gateway import _bounded_items, _normalize_decision_payload
-from app.llm.schemas import AgentDecision, GeneralChatResponse
+from app.llm.gateway import _bounded_items, _fallback_request_plan, _normalize_decision_payload
+from app.llm.schemas import AgentDecision, GeneralChatResponse, RequestUnderstanding
 
 
 def request(**overrides):
@@ -105,3 +105,77 @@ def test_general_chat_response_has_a_small_explicit_knowledge_reference_contract
         "used_system_knowledge_ids": ["ssh_host_key_mismatch"],
     })
     assert response.used_system_knowledge_ids == ["ssh_host_key_mismatch"]
+
+
+def test_request_plan_preserves_multiple_goals_constraints_and_dependencies():
+    plan = RequestUnderstanding.model_validate({
+        "goals": [
+            {"id": "g1", "kind": "knowledge", "description": "查询历史认证失败", "time_focus": "historical"},
+            {"id": "g2", "kind": "runtime_read", "description": "诊断 backend 当前状态", "time_focus": "current"},
+            {"id": "g3", "kind": "change", "description": "必要时启动 backend", "time_focus": "current",
+             "depends_on": ["g2"], "condition": "g2 确认 backend 已停止"},
+        ],
+        "constraints": ["不要修改 MySQL"],
+        "summary": "查询历史并按条件恢复 backend",
+    })
+    assert [goal.kind for goal in plan.goals] == ["knowledge", "runtime_read", "change"]
+    assert plan.goals[2].depends_on == ["g2"]
+    assert plan.constraints == ["不要修改 MySQL"]
+    assert plan.requested_effect == "change"
+
+
+def test_request_plan_rejects_unknown_dependency():
+    with pytest.raises(ValidationError, match="dependencies"):
+        RequestUnderstanding.model_validate({
+            "goals": [{"id": "g1", "kind": "change", "description": "启动 backend",
+                       "time_focus": "current", "depends_on": ["missing"]}],
+            "summary": "启动 backend",
+        })
+
+
+def test_request_plan_rejects_dependency_cycles_and_general_tool_calls():
+    with pytest.raises(ValidationError):
+        RequestUnderstanding.model_validate({
+            "goals": [
+                {"id": "g1", "kind": "runtime_read", "description": "检查 A",
+                 "time_focus": "current", "depends_on": ["g2"]},
+                {"id": "g2", "kind": "change", "description": "修复 A",
+                 "time_focus": "current", "depends_on": ["g1"]},
+            ],
+            "summary": "循环依赖",
+        })
+    with pytest.raises(ValidationError):
+        RequestUnderstanding.model_validate({
+            "goals": [{"id": "g1", "kind": "general", "description": "打招呼",
+                       "time_focus": "timeless"}],
+            "recommended_calls": [{"goal_id": "g1", "capability": "service.status",
+                                   "arguments": {"service": "backend"}}],
+            "summary": "普通对话",
+        })
+
+
+def test_mixed_change_plan_can_collect_read_evidence_before_change():
+    plan = {
+        "goals": [
+            {"id": "g1", "kind": "runtime_read", "description": "检查 backend", "time_focus": "current"},
+            {"id": "g2", "kind": "change", "description": "停止时启动 backend", "time_focus": "current",
+             "depends_on": ["g1"], "condition": "backend 已停止"},
+        ],
+        "summary": "检查并按条件启动 backend",
+    }
+    decision = AgentDecision.model_validate({
+        "decision": "invoke_tools", "request": plan,
+        "tool_calls": [{"capability": "service.status", "arguments": {"service": "backend"}}],
+    })
+    assert decision.decision == "invoke_tools"
+
+
+@pytest.mark.parametrize(("question", "kind"), [
+    ("重启 backend 会有什么影响？", "general"),
+    ("帮我重启 backend", "change"),
+    ("不要重启，只看 backend 当前状态", "runtime_read"),
+    ("之前 backend 是否出现过认证失败？", "knowledge"),
+])
+def test_fallback_router_is_conservative(question, kind):
+    plan = _fallback_request_plan(question, {"project_selected": True})
+    assert plan.goals[0].kind == kind
